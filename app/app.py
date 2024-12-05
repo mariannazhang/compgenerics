@@ -36,13 +36,22 @@ Kind = namedtuple("Kind", ("name", "features"))
 
 # initialize all features
 all_features_initial = [
-    "eats flowers",
-    "scared of shadows", 
-    "jumps over puddles", 
-    "sings lovely songs",
+    "love to eat flowers",
     "have stripes in their hair",
-    "bounce a ball on their heads",
-    "climb tall fences"    
+    "can bounce a ball on their heads",
+    "like to sing",
+    "climb tall fences",
+    "flap their arms when they are happy",
+    "have freckles on their feet",
+    "hop over puddles", 
+    "hate walking in the mud", 
+    "draw stars on their knees",
+    "can flip in the air",
+    "are scared of ladybugs",
+    "hate ice cream",
+    "chase shadows",
+    "babies are wrapped in orange blankets",
+    "sleep in tall trees"
 ]
 
 # helper functions
@@ -73,6 +82,28 @@ def is_zarpie_feature(feature, coherence):
 
 with st.sidebar:
     
+    st.write("# Speaker")
+    st.write("independent on each trial")
+    
+    speaker_features_under_consideration = st.selectbox('''**Speaker features under consideration**   
+                                                        speaker is trying to align listener's beliefs about whether these are kind-linked or not''', 
+                                                         options = ["observed kind-linked features only", "all kind-linked features"]) 
+    
+    possible_utterances = st.multiselect('''**Possible utterances**   
+                                         possible utterances the speaker can say''', 
+                                        options = ["Zarpies", "This Zarpie", "silence"],
+                                        default = ["Zarpies", "This Zarpie"]) 
+    
+    # note: streamlit doesn't support latex in options, might be a way to use format_func to alter display
+    speaker_weight = st.selectbox('''**Speaker weight**  
+                                        note: utility^beta may have issues when utility returns 0''', 
+                                  options = ["e^(utility*beta)", "utility^beta"]) 
+    
+    inv_temp = st.slider('''**Speaker rationality/inverse temperature** ($\\beta$)  
+                              how much speaker cares about maximizing listener belief''', 
+                              0.0, 100.0, 5.0)
+    
+    
     st.write("# Listener")
     
     listener_features_under_consideration = st.selectbox('''**Listener features under consideration**   
@@ -89,14 +120,101 @@ with st.sidebar:
     st.write('''**Observed data**  
                 each trial is independent speaker and independent example''')
     
+    # data_initial = pd.DataFrame(
+    #     [
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "eats flowers", 
+    #          "observed_features": "eats flowers, sings lovely songs"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "scared of shadows", 
+    #          "observed_features": "scared of shadows"}
+    #     ]
+    # )
+    
+    # small test
     data_initial = pd.DataFrame(
         [
-            {"utterance_subject": "Zarpies", "utterance_feature": "eats flowers", 
-             "observed_features": "eats flowers, sings lovely songs"},
-            {"utterance_subject": "This Zarpie", "utterance_feature": "scared of shadows", 
-             "observed_features": "scared of shadows"}
+            {"utterance_subject": "Zarpies", "utterance_feature": "love to eat flowers", 
+             "observed_features": "love to eat flowers"},
+            {"utterance_subject": "Zarpies", "utterance_feature": "have stripes in their hair", 
+             "observed_features": "have stripes in their hair"}
         ]
     )
+
+    
+    # # generic to induction study 6 (CogSci draft) - generic condition
+    # data_initial = pd.DataFrame(
+    #     [
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "love to eat flowers", 
+    #          "observed_features": "love to eat flowers"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "have stripes in their hair", 
+    #          "observed_features": "have stripes in their hair"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "can bounce a ball on their heads", 
+    #          "observed_features": "can bounce a ball on their heads"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "like to sing", 
+    #          "observed_features": "like to sing"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "climb tall fences", 
+    #          "observed_features": "climb tall fences"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "flap their arms when they are happy", 
+    #          "observed_features": "flap their arms when they are happy"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "have freckles on their feet", 
+    #          "observed_features": "have freckles on their feet"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "hop over puddles", 
+    #          "observed_features": "hop over puddles"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "hate walking in the mud", 
+    #          "observed_features": "hate walking in the mud"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "draw stars on their knees", 
+    #          "observed_features": "draw stars on their knees"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "can flip in the air", 
+    #          "observed_features": "can flip in the air"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "are scared of ladybugs", 
+    #          "observed_features": "are scared of ladybugs"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "hate ice cream", 
+    #          "observed_features": "hate ice cream"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "chase shadows", 
+    #          "observed_features": "chase shadows"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "babies are wrapped in orange blankets", 
+    #          "observed_features": "babies are wrapped in orange blankets"},
+    #         {"utterance_subject": "Zarpies", "utterance_feature": "sleep in tall trees", 
+    #          "observed_features": "sleep in tall trees"}
+    #     ]
+    # )
+    
+    # # generic to induction study 6 (CogSci draft) - specific condition
+    # data_initial = pd.DataFrame(
+    #     [
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "love to eat flowers", 
+    #          "observed_features": "love to eat flowers"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "have stripes in their hair", 
+    #          "observed_features": "have stripes in their hair"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "can bounce a ball on their heads", 
+    #          "observed_features": "can bounce a ball on their heads"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "like to sing", 
+    #          "observed_features": "like to sing"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "climb tall fences", 
+    #          "observed_features": "climb tall fences"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "flap their arms when they are happy", 
+    #          "observed_features": "flap their arms when they are happy"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "have freckles on their feet", 
+    #          "observed_features": "have freckles on their feet"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "hop over puddles", 
+    #          "observed_features": "hop over puddles"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "hate walking in the mud", 
+    #          "observed_features": "hate walking in the mud"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "draw stars on their knees", 
+    #          "observed_features": "draw stars on their knees"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "can flip in the air", 
+    #          "observed_features": "can flip in the air"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "are scared of ladybugs", 
+    #          "observed_features": "are scared of ladybugs"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "hate ice cream", 
+    #          "observed_features": "hate ice cream"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "chase shadows", 
+    #          "observed_features": "chase shadows"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "babies are wrapped in orange blankets", 
+    #          "observed_features": "babies are wrapped in orange blankets"},
+    #         {"utterance_subject": "This Zarpie", "utterance_feature": "sleep in tall trees", 
+    #          "observed_features": "sleep in tall trees"}
+    #     ]
+    # )
     
     data_df = st.data_editor(
         data_initial,
@@ -104,7 +222,7 @@ with st.sidebar:
             "utterance_subject": st.column_config.SelectboxColumn(
                 "utterance subject",
                 help = "specific or generic",
-                options = ["This Zarpie", "Zarpies"],
+                options = possible_utterances,
                 width = "small",
                 required = True
             ),
@@ -123,23 +241,6 @@ with st.sidebar:
         hide_index = True,
         num_rows = "dynamic"
     )
-    
-    st.write("# Speaker")
-    st.write("independent on each trial")
-    
-    speaker_features_under_consideration = st.selectbox('''**Speaker features under consideration**   
-                                                        speaker is trying to align listener's beliefs about whether these are kind-linked or not''', 
-                                                         options = ["observed kind-linked features only", "all kind-linked features"]) 
-    
-    # note: streamlit doesn't support latex in options, might be a way to use format_func to alter display
-    speaker_weight = st.selectbox('''**Speaker weight**  
-                                        note: utility^beta may have issues when utility returns 0''', 
-                                  options = ["e^(utility*beta)", "utility^beta"]) 
-    
-    inv_temp = st.slider('''**Speaker rationality/inverse temperature** ($\\beta$)  
-                              how much speaker cares about maximizing listener belief''', 
-                              0.0, 100.0, 5.0)
-    
     
 #####################
 # DATA VALIDATION
@@ -164,6 +265,8 @@ for i, row in data_df.iterrows():
 
 data = tuple(data)
 
+# convert to tuple
+possible_utterances = tuple(possible_utterances)
 
 #####################
 # MODELS
@@ -186,8 +289,12 @@ with tab1:
         def meaning(kind: Kind, inst: Instance, utt: Utterance):
             if "This" in utt.subj: # specific
                 return utt.feature in inst.features  # specific is true = mentioned feature is in list of example instance's features
-            else: # generic
+            elif "Zarpies" in utt.subj: # generic
                 return utt.feature in kind.features   # generic is true = mentioned feature is in list of kind-linked features
+            elif "silence" in utt.subj: # silence
+                return True # silence is always true
+            else: # other
+                return True
         
         # memo-ized, so that feeding in same feature returns same kind-linked status each time
         @mem
@@ -281,8 +388,6 @@ with tab1:
         # separate inferred zarpie features vs inferred coherence
         df_coherence = df.groupby('coherence').agg({'Probability': 'sum'})
         df_zarpie_features = df.groupby('zarpie_features').agg({'Probability': 'sum'}).reset_index()
-        
-        print("yes")
 
         # convert tuples of features to string, sort by number of features
         df_zarpie_features['zarpie_features_string'] = [', '.join(el) for el in df_zarpie_features['zarpie_features']] 
@@ -296,7 +401,6 @@ with tab1:
                         x = "coherence",
                         y = "Probability")
         plt.xlim(.1, .9)
-        plt.ylim(0, .2)
         plt.suptitle("inferred coherence")
 
         st.pyplot(g.figure)
@@ -327,17 +431,19 @@ with tab1:
         st.subheader("Likelihood")
         
         # get semantic likelihood of various utterances
-        data_example = (
-            (Utterance(subj = "Zarpies", feature = "kind-linked feature"), Instance(kind = "Zarpie", features = ("kind-linked feature", ))),
-            (Utterance(subj = "Zarpies", feature = "not kind-linked feature"), Instance(kind = "Zarpie", features = ("not kind-linked feature", ))),
-            (Utterance(subj = "This Zarpie", feature = "example feature"), Instance(kind = "Zarpie", features = ("example feature", ))),
-            (Utterance(subj = "This Zarpie", feature = "not an example feature"), Instance(kind = "Zarpie", features = ("example feature", )))
-            )
-        
+        ## set up toy data
+        example_zarpie = Instance(kind = "Zarpie", features = ("kind-linked feature", "idiosyncratic feature"))
         zarpies = Kind("Zarpies", "kind-linked feature")
         
+        ## construct space of possible utterances
+        all_utts_list = []
+        for subj in possible_utterances:
+            for feat in example_zarpie.features + ("not an example feature",):
+                all_utts_list.append((Utterance(subj = subj, feature = feat), example_zarpie))
+        
+        ## get meaning for each utterance
         semantic_likelihood = []
-        for pair in data_example:
+        for pair in all_utts_list:
             utt = pair[0]
             inst = pair[1]
             new_row = {'Utterance subject': utt.subj, 'Utterance feature': utt.feature, 
@@ -346,7 +452,7 @@ with tab1:
         semantic_likelihood = pd.DataFrame(semantic_likelihood)
         semantic_likelihood['Utterance'] = "\"" + semantic_likelihood['Utterance subject'] + ": " + semantic_likelihood['Utterance feature'] + "\""
         
-        # plot semantic likelihood
+        ## plot semantic likelihood
         g = sns.barplot(data = semantic_likelihood,
                         x = "Likelihood",
                         y = "Utterance")
@@ -418,7 +524,7 @@ with tab2:
     def speaker(kind_features: Kind.features, observed_instance: Instance, 
                 **kwargs):
         
-        utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie"]),       # consider saying generic or specific..
+        utt = Utterance(subj = draw_from(possible_utterances),       # consider saying generic or specific..
                         feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
         utility = utility_func((utt, observed_instance), 
                                kind_features,
@@ -457,13 +563,14 @@ with tab1:
         # pragmatic listener
         @infer
         def pragmatic_listener(data: tuple[tuple[Utterance, Instance]], 
-                               listener_features_under_consideration,
-                               speaker_features_under_consideration,
-                               speaker_weight, inv_temp):
+                               **kwargs):
+                            #    listener_features_under_consideration = listener_features_under_consideration,
+                            #    possible_utterances = possible_utterances,
+                            #    speaker_features_under_consideration = speaker_features_under_consideration,
+                            #    speaker_weight = speaker_weight, inv_temp = inv_temp):
+            print("here")
             # sample a coherence
             coherence = draw_from([.1, .2, .3, .4, .5, .6, .7, .8, .9])
-            
-            
             
             if listener_features_under_consideration == "observed features so far":
                 # incrementally build out feature list from data
@@ -490,9 +597,7 @@ with tab1:
                 
                     # get speaker likelihood
                     utt_likelihood = calc_utt_likelihood(zarpies.features, inst, utt, 
-                                                         listener_features_under_consideration = listener_features_under_consideration,
-                                                         speaker_features_under_consideration = speaker_features_under_consideration,
-                                                         speaker_weight = speaker_weight, inv_temp = inv_temp)
+                                                         **kwargs)
                     
                     # condition on speaker likelihood
                     condition(utt_likelihood)
@@ -528,9 +633,7 @@ with tab1:
                     
                     # get speaker likelihood
                     utt_likelihood = calc_utt_likelihood(zarpies.features, inst, utt, 
-                                                         listener_features_under_consideration = listener_features_under_consideration,
-                                                         speaker_features_under_consideration = speaker_features_under_consideration,
-                                                         speaker_weight = speaker_weight, inv_temp = inv_temp)
+                                                         **kwargs)
                     
                     # condition on speaker likelihood
                     condition(utt_likelihood)
@@ -547,9 +650,11 @@ with tab1:
 
         st.subheader("Posterior")
         
-        # run pragmatic_listener
+        print(listener_features_under_consideration)
+        # run pragmatic_listener with sidebar parameters
         dist = pragmatic_listener(data, 
                                   listener_features_under_consideration = listener_features_under_consideration,
+                                  possible_utterances = possible_utterances,
                                   speaker_features_under_consideration = speaker_features_under_consideration,
                                   speaker_weight = speaker_weight, inv_temp = inv_temp)
 
@@ -570,7 +675,6 @@ with tab1:
                         x = "coherence",
                         y = "Probability")
         plt.xlim(.1, .9)
-        plt.ylim(0, .2)
         plt.suptitle("inferred coherence")
 
         st.pyplot(g.figure)
@@ -603,24 +707,26 @@ with tab1:
         
         st.subheader("Likelihood")
         
-        # get speaker likelihood of various utterances
-        data_example = (
-            (Utterance(subj = "Zarpies", feature = "kind-linked feature"), Instance(kind = "Zarpie", features = ("kind-linked feature", "non-kind linked example feature"))),
-            (Utterance(subj = "Zarpies", feature = "non-kind linked feature"), Instance(kind = "Zarpie", features = ("kind-linked feature", "non-kind linked example feature"))),
-            (Utterance(subj = "This Zarpie", feature = "example feature"), Instance(kind = "Zarpie", features = ("kind-linked feature", "non-kind linked example feature", "example feature"))),
-            (Utterance(subj = "This Zarpie", feature = "not an example feature"), Instance(kind = "Zarpie", features = ("kind-linked feature", "non-kind linked example feature", "example feature")))
-            )
-        
+        # get semantic likelihood of various utterances
+        ## set up toy data
+        example_zarpie = Instance(kind = "Zarpie", features = ("kind-linked feature", "idiosyncratic feature"))
         zarpies = Kind("Zarpies", "kind-linked feature")
         
+        ## construct space of possible utterances
+        all_utts_list = []
+        for subj in possible_utterances:
+            for feat in example_zarpie.features + ("not an example feature",):
+                all_utts_list.append((Utterance(subj = subj, feature = feat), example_zarpie))
+        
+        ## get speaker likelihood for each utterance
         speaker_likelihood = []
-        for pair in data_example:
+        for pair in all_utts_list:
             utt = pair[0]
             inst = pair[1]
-            
             dist = speaker(kind_features = zarpies.features, observed_instance = inst, 
                            listener_features_under_consideration = listener_features_under_consideration,
                            speaker_features_under_consideration = speaker_features_under_consideration,
+                           possible_utterances = possible_utterances,
                            inv_temp = inv_temp, speaker_weight = speaker_weight)
             
             utt_likelihood = dist.prob(Utterance(subj = utt.subj, feature = utt.feature))
