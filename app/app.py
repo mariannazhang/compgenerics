@@ -10,7 +10,6 @@ import math
 
 # import packages for manipulating data
 import pandas as pd
-import ast
 
 # import packages for plotting
 import seaborn as sns
@@ -98,6 +97,10 @@ with st.sidebar:
     speaker_weight = st.selectbox('''**Speaker weight**  
                                         note: utility^beta may have issues when utility returns 0''', 
                                   options = ["e^(utility*beta)", "utility^beta"]) 
+    # warn users about utility^beta speaker weight
+    if speaker_weight == "utility^beta":
+        st.warning("This speaker weight will throw an error if the utility function returns 0.",
+                   icon="⚠️")
     
     inv_temp = st.slider('''**Speaker rationality/inverse temperature** ($\\beta$)  
                               how much speaker cares about maximizing listener belief''', 
@@ -111,23 +114,21 @@ with st.sidebar:
                                                          options = ["observed features so far", "all observed features", "all observed features and more"]) 
     
     if listener_features_under_consideration == "all observed features and more":
-        all_features = ast.literal_eval(st.text_input('''**Enter all observed and more features**    
-                                                        must contain all observed features''', 
-                                                        value = all_features_initial))
+        all_features_raw = st.text_input('''**Enter all observed and more features**    
+                                            a comma-separated list; must contain all observed features''', 
+                                            value = ", ".join(all_features_initial))
+        # parse raw input as list
+        all_features = all_features_raw.split(', ')
+        all_features = [str(n) for n in all_features]
+        # give users a check that "observed and more features" was parsed as intended
+        st.info(f"You have inputted {len(all_features)} features.",
+                icon="ℹ️")
+        
     else:
         all_features = all_features_initial
     
     st.write('''**Observed data**  
                 each trial is independent speaker and independent example''')
-    
-    # data_initial = pd.DataFrame(
-    #     [
-    #         {"utterance_subject": "Zarpies", "utterance_feature": "eats flowers", 
-    #          "observed_features": "eats flowers, sings lovely songs"},
-    #         {"utterance_subject": "This Zarpie", "utterance_feature": "scared of shadows", 
-    #          "observed_features": "scared of shadows"}
-    #     ]
-    # )
     
     # small test
     data_initial = pd.DataFrame(
@@ -138,7 +139,6 @@ with st.sidebar:
              "observed_features": "have stripes in their hair"}
         ]
     )
-
     
     # # generic to induction study 6 (CogSci draft) - generic condition
     # data_initial = pd.DataFrame(
@@ -242,14 +242,32 @@ with st.sidebar:
         num_rows = "dynamic"
     )
     
-#####################
-# DATA VALIDATION
-#####################
+    ###################
+    # DATA VALIDATION
+    ###################
+    
+    # check entire df for empty strings; throw error if any are detected
+    if data_df.map(lambda x: x == '').any().any():
+        st.error("Please fill out every row.",
+                 icon="🚨")
+    
+    # checking trial structure
+    for i, row in data_df.iterrows():
+        row_observed_features = row['observed_features'].split(', ')
+        row_utterance_feature = row['utterance_feature']
+        
+        # if user selects "observed and more features",
+        # check that observed features for every trial are in "observed and more features"
+        for feature in row_observed_features:
+            if listener_features_under_consideration == "all observed features and more" and feature not in all_features:
+                st.error("The observed and more features must include all observed features.",
+                            icon="🚨")
+                
+        # check that utterance feature is in observed features for every trial; throw error if not
+        if row_utterance_feature not in row_observed_features:
+            st.error("The observed features must include the utterance feature for a given trial.",
+                     icon="🚨")
 
-    # FIXME: check that the utterance feature is in the observed features, for each trial
-    # FIXME: check the observed features is formatted as a valid list, for each trial
-    # FIXME: check observed and more features is formatted as a valid list
-    # FIXME: check observed and more features contains the observed features across all trials
     
 #####################
 # CLEANING DATA
@@ -568,7 +586,6 @@ with tab1:
                             #    possible_utterances = possible_utterances,
                             #    speaker_features_under_consideration = speaker_features_under_consideration,
                             #    speaker_weight = speaker_weight, inv_temp = inv_temp):
-            print("here")
             # sample a coherence
             coherence = draw_from([.1, .2, .3, .4, .5, .6, .7, .8, .9])
             
@@ -650,7 +667,6 @@ with tab1:
 
         st.subheader("Posterior")
         
-        print(listener_features_under_consideration)
         # run pragmatic_listener with sidebar parameters
         dist = pragmatic_listener(data, 
                                   listener_features_under_consideration = listener_features_under_consideration,
