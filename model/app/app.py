@@ -135,7 +135,7 @@ with st.sidebar:
         [
             {"utterance_subject": "Zarpies", "utterance_feature": "love to eat flowers", 
              "observed_features": "love to eat flowers"},
-            {"utterance_subject": "Zarpies", "utterance_feature": "have stripes in their hair", 
+            {"utterance_subject": "This Zarpie", "utterance_feature": "have stripes in their hair", 
              "observed_features": "have stripes in their hair"}
         ]
     )
@@ -216,16 +216,25 @@ with st.sidebar:
     #     ]
     # )
     
+    st.session_state['save_data'] = data_initial
     data_df = st.data_editor(
         data_initial,
         column_config = {
-            "utterance_subject": st.column_config.SelectboxColumn(
+            "utterance_subject": st.column_config.TextColumn(
                 "utterance subject",
-                help = "specific or generic",
-                options = possible_utterances,
+                help = "must be one of the possible utterances",
                 width = "small",
                 required = True
             ),
+            # FIXME: whole df resets when possible utterances is changed. 
+            # likely requires a session state issue
+            # "utterance_subject": st.column_config.SelectboxColumn(
+            #     "utterance subject",
+            #     help = "must be one of the possible utterances",
+            #     options = possible_utterances,
+            #     width = "small",
+            #     required = True
+            # ),
             "utterance_feature": st.column_config.SelectboxColumn(
                 "utterance feature",
                 help = "must be one of the example features",
@@ -235,7 +244,8 @@ with st.sidebar:
             "observed_features": st.column_config.TextColumn(
                 "observed features",
                 help = "features of the observed group member; must include the utterance feature",
-                width = "long"
+                width = "long",
+                required = True
             ),
         },
         hide_index = True,
@@ -253,8 +263,13 @@ with st.sidebar:
     
     # checking trial structure
     for i, row in data_df.iterrows():
+        row_utterance_subject = row['utterance_subject']
         row_observed_features = row['observed_features'].split(', ')
         row_utterance_feature = row['utterance_feature']
+        
+        if row_utterance_subject not in possible_utterances:
+            st.error("The utterance subject must be one of the possible utterances set in the speaker model.",
+                        icon="🚨")
         
         # if user selects "observed and more features",
         # check that observed features for every trial are in "observed and more features"
@@ -515,18 +530,15 @@ with tab2:
         def f(x):
             
             if speaker_features_under_consideration == "observed kind-linked features only":
-                observed_features_so_far = []
-            
-                utt = pair[0]
                 inst = pair[1]
                 
                 # only seen one trial
                 observed_features_so_far = inst.features
                 observed_features = observed_features_so_far
                 
-                # NOTE: restricted to observed features from data
-                return jaccard_similarity(set(kind_features) & set(observed_features), 
-                                          set(x["zarpie_features"]) & set(observed_features))
+                # NOTE: restricted to observed features from data                               # e.g., example instance has (kind-linked, idiosyncratic) features --> similarity = 1/3
+                return jaccard_similarity(set(kind_features) & set(observed_features),          # (kind) & (kind, idio) = (kind)
+                                          set(x["zarpie_features"]) & set(observed_features))   # (lit list infer from generic: kind, idio) & (kind, idio) = (kind, idio)
             
             if speaker_features_under_consideration == "all kind-linked features":
                 # NOTE: across all kind-linked features known to the speaker
@@ -542,7 +554,7 @@ with tab2:
     def speaker(kind_features: Kind.features, observed_instance: Instance, 
                 **kwargs):
         
-        utt = Utterance(subj = draw_from(possible_utterances),       # consider saying generic or specific..
+        utt = Utterance(subj = draw_from(possible_utterances),              # consider saying generic or specific..
                         feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
         utility = utility_func((utt, observed_instance), 
                                kind_features,
@@ -749,6 +761,8 @@ with tab1:
             new_row = {'Utterance subject': utt.subj, 'Utterance feature': utt.feature, 
                        'Likelihood': utt_likelihood}
             speaker_likelihood.append(new_row)
+            
+        # convert to df, assemble full utterance for plotting
         speaker_likelihood = pd.DataFrame(speaker_likelihood)
         speaker_likelihood['Utterance'] = "\"" + speaker_likelihood['Utterance subject'] + ": " + speaker_likelihood['Utterance feature'] + "\""
         

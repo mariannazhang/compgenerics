@@ -1,0 +1,13 @@
+# local virtual environments
+.venv/
+.venv-marianna-desktop/
+
+# reference for self
+background/
+model/generics-model*
+!model/generics-model.ipynb
+
+# image/large files unless mentioned
+*.png
+*.jpg
+*.pptx
