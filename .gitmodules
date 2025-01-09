@@ -4,3 +4,6 @@
 [submodule "writeups/generics-cogsci-2025"]
 	path = writeups/generics-cogsci-2025
 	url = https://git@git.overleaf.com/675b05e01a9e7750a49088c1
+[submodule "model/model-old"]
+	path = model/model-old
+	url = https://github.com/markkho/generics-learning.git

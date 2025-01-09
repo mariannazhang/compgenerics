@@ -3,6 +3,9 @@ This repository contains information for the project computational generics. It 
 
 If you have any questions, please contact me (Marianna Zhang) at <marianna.zhang@nyu.edu>.
 
+## Data
+Contains data (in .csv) from the empirical study. 
+
 ## Models
 Contains code (in Python) to run the model and produce figures of predictions.
 

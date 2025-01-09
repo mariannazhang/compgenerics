@@ -1,11 +1,21 @@
-# local virtual environments
-.venv/
-.venv-marianna-desktop/
+# virtual environments
+.venv*
 
-# reference for self
-background/
-model/generics-model*
-!model/generics-model.ipynb
+# not ready yet
+writeups/review-paper
+
+# notes for self
+model/background
+model/model-alt
+
+# tex intermediate files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.log
+*.run.xml
+*.synctex.gz
 
 # image/large files unless mentioned
 *.png
