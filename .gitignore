@@ -2,11 +2,14 @@
 .venv*
 
 # not ready yet
-writeups/review-paper
+writeups/
+!writeups/generics-cogsci-2025
 
 # notes for self
 model/background
 model/model-alt
+model/__pycache__
+scratch/
 
 # tex intermediate files
 *.aux
