@@ -41,19 +41,20 @@ def meaning(kind: Kind, inst: Instance, utt: Utterance,
             return utt.feature in inst.features # treat generic as specific in lesioned model 
         else:
             return utt.feature in kind.features   # generic is true = mentioned feature is in list of kind-linked features
-    elif "silence" in utt.subj: # silence
-        return True
+    # elif "silence" in utt.subj: # silence
+    #     return True
     else:
         return True
 
 @infer
 def literal_listener(data: tuple[tuple[Utterance, Instance]],
-                     only_return_coherence = False):
+                     only_return_coherence = False,
+                     **kwargs):
     # sample a coherence
     coherence = draw_from([.1, .2, .3, .4, .5, .6, .7, .8, .9])
 
     # incrementally build out feature list from data
-    observed_features_so_far = ()
+    # observed_features_so_far = ()
     zarpie_features_so_far = ()
     
     # for each utterance-instance pair in data:
@@ -62,21 +63,22 @@ def literal_listener(data: tuple[tuple[Utterance, Instance]],
         utt = pair[0]
         inst = pair[1]
         
-        # flip observed features & add to feature list
+        # flip observed features & add to feature list based on memo-ized coherence flip
         for feature in inst.features:
-            observed_features_so_far = observed_features_so_far + (feature, )
+            # observed_features_so_far = observed_features_so_far + (feature, )
             if(is_zarpie_feature(feature, coherence)):
                 zarpie_features_so_far = zarpie_features_so_far + (feature, )
         
         # convert to tuple; set discards duplicate features
-        observed_features_so_far = tuple(set(observed_features_so_far))
+        # observed_features_so_far = tuple(set(observed_features_so_far))
         zarpie_features_so_far = tuple(set(zarpie_features_so_far))
         
         # define zarpie concept to have those features
         zarpies = Kind("Zarpies", zarpie_features_so_far)
         
         # get truth-value of utterance
-        semantic_likelihood = meaning(kind = zarpies, inst = inst, utt = utt)
+        semantic_likelihood = meaning(kind = zarpies, inst = inst, utt = utt,
+                                      **kwargs)
         
         # condition softly on truth-value (sometimes speaker misspeaks and feature is not true)
         condition(.95 if semantic_likelihood else .05)
@@ -104,23 +106,20 @@ def jaccard_similarity(set_a, set_b):
             
 @keep_deterministic
 def utility_func(pair: tuple[Utterance, Instance],
-                 kind_features: tuple[str, ...]):
+                 kind_features: tuple[str, ...],
+                 **kwargs):
     # run literal listener
-    data = (pair, )
-    dist = literal_listener(data)
+    dist = literal_listener(pair, 
+                            **kwargs)
     
-    utt = pair[0]
     inst = pair[1]
-    
-    # only seen one trial
-    observed_features_so_far = inst.features
     
     # compare similarity of inferred kind-linked features to true kind features
     def f(x):
         
-        # NOTE: restricted to observed features from data
-        return jaccard_similarity(set(kind_features) & set(observed_features_so_far), 
-                                  set(x["zarpie_features"]) & set(observed_features_so_far))
+        # NOTE: restricted to features in the example instance
+        return jaccard_similarity(set(kind_features) & set(inst.features), 
+                                  set(x["zarpie_features"]) & set(inst.features))
         
         ## NOTE: across all kind-linked features known to the speaker
         # return jaccard_similarity(set(kind_features), 
@@ -133,11 +132,14 @@ def utility_func(pair: tuple[Utterance, Instance],
 
 @infer
 def speaker(kind_features: Kind.features, observed_instance: Instance, 
-            inv_temp = 20):
-    utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie", "silence"]),       # consider saying generic or specific..
+            inv_temp = 20,
+            **kwargs):
+    utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie"]),       # consider saying generic or specific..
+                    # subj = draw_from(["Zarpies", "This Zarpie", "silence"])
                     feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
     utility = utility_func((utt, observed_instance), 
-                           kind_features)                               # consider what literal listener will infer (about zarpie features, coherence) from utterance
+                           kind_features,
+                           **kwargs)                               # consider what literal listener will infer (about zarpie features, coherence) from utterance
                                                                         # how close is literal listener's inferences to true zarpie features
     # weight = utility**inv_temp                                        # maximize utility, with inv_temp rationality
     weight = math.exp(inv_temp*utility)                                 # version to avoid issues with 0 utility
@@ -196,7 +198,7 @@ def pragmatic_listener(data: tuple[tuple[Utterance, Instance]],
         # likelihood = speaker's probability of saying the utterance
         # cf. literal listener, which uses literal meaning as likelihood
         utt_likelihood = calc_utt_likelihood(zarpies.features, inst, utt,
-                                             **kwargs)
+                                            **kwargs)
         
         # condition on speaker likelihood
         condition(utt_likelihood)
@@ -209,7 +211,7 @@ def pragmatic_listener(data: tuple[tuple[Utterance, Instance]],
         return coherence
     else:
         return hashabledict(zarpie_features = zarpies.features, coherence = coherence)
-    
+
 
 #####################
 # SPEAKER 2
@@ -247,7 +249,8 @@ def utility_func2(pair: tuple[Utterance, Instance],
 @infer
 def speaker2(kind_features: Kind.features, observed_instance: Instance, 
              inv_temp = 5):
-    utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie", "silence"]),       # consider saying generic or specific..
+    utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie"]),       # consider saying generic or specific..
+                    # subj = draw_from(["Zarpies", "This Zarpie", "silence"]),       # consider saying generic or specific..
                     feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
     utility = utility_func2((utt, observed_instance), kind_features)   # consider what *pragmatic* listener will infer (about zarpie features, coherence) from utterance
                                                                         # how close is *pragmatic* listener's inferences to true zarpie features

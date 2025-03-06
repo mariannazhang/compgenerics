@@ -5,7 +5,8 @@
 writeups/
 !writeups/generics-cogsci-2025
 
-# notes for self
+# not public
+IRB/
 model/background
 model/model-alt
 model/__pycache__
@@ -23,4 +24,11 @@ scratch/
 # image/large files unless mentioned
 *.png
 *.jpg
+*.mp4
+*.mov
 *.pptx
+
+# misc R files
+*.Rproj.user
+*.Rproj
+rsconnect/
