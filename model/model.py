@@ -1,8 +1,9 @@
 from gorgo import infer, condition, draw_from, flip, keep_deterministic, mem
 from gorgo.hashable import hashabledict
-from gorgo.distributions.builtin_dists import Uniform, Beta
+from gorgo.distributions.builtin_dists import Categorical, Beta
 
 from collections import namedtuple
+import numpy as np
 import math
 
 #####################
@@ -49,14 +50,18 @@ def meaning(kind: Kind, inst: Instance, utt: Utterance,
 @infer
 def literal_listener(data: tuple[tuple[Utterance, Instance]],
                      only_return_coherence = False,
+                     prior = [.1, .2, .3, .4, .5, .6, .7, .8, .9],
                      **kwargs):
     # sample a coherence
-    coherence = draw_from([.1, .2, .3, .4, .5, .6, .7, .8, .9])
+    if isinstance(prior, list):
+        coherence = draw_from(prior)
+    else:
+        coherence = prior.sample()
 
     # incrementally build out feature list from data
     # observed_features_so_far = ()
     zarpie_features_so_far = ()
-    
+        
     # for each utterance-instance pair in data:
     for pair in data:
         # get utterance and instance
@@ -68,7 +73,7 @@ def literal_listener(data: tuple[tuple[Utterance, Instance]],
             # observed_features_so_far = observed_features_so_far + (feature, )
             if(is_zarpie_feature(feature, coherence)):
                 zarpie_features_so_far = zarpie_features_so_far + (feature, )
-        
+
         # convert to tuple; set discards duplicate features
         # observed_features_so_far = tuple(set(observed_features_so_far))
         zarpie_features_so_far = tuple(set(zarpie_features_so_far))
@@ -109,7 +114,7 @@ def utility_func(pair: tuple[Utterance, Instance],
                  kind_features: tuple[str, ...],
                  **kwargs):
     # run literal listener
-    dist = literal_listener(pair, 
+    dist = literal_listener((pair, ), 
                             **kwargs)
     
     inst = pair[1]
@@ -134,13 +139,19 @@ def utility_func(pair: tuple[Utterance, Instance],
 def speaker(kind_features: Kind.features, observed_instance: Instance, 
             inv_temp = 20,
             **kwargs):
+    
+    # pick an utterance
     utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie"]),       # consider saying generic or specific..
-                    # subj = draw_from(["Zarpies", "This Zarpie", "silence"])
                     feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
+    # utt = Utterance(subj = draw_from(["Zarpies", "This Zarpie", "silence"]),  # consider saying generic or specific or silence..
+    #                 feature = draw_from(observed_instance.features))    # ..about some feature of observed instance
+    
+    # calculate utility of utterance
     utility = utility_func((utt, observed_instance), 
                            kind_features,
                            **kwargs)                               # consider what literal listener will infer (about zarpie features, coherence) from utterance
                                                                         # how close is literal listener's inferences to true zarpie features
+    # weight by utility, inv temp
     # weight = utility**inv_temp                                        # maximize utility, with inv_temp rationality
     weight = math.exp(inv_temp*utility)                                 # version to avoid issues with 0 utility
     condition(weight)
@@ -167,12 +178,16 @@ def calc_utt_likelihood(features, inst, utt,
 @infer
 def pragmatic_listener(data: tuple[tuple[Utterance, Instance]],
                        only_return_coherence=False,
+                       prior = [.1, .2, .3, .4, .5, .6, .7, .8, .9],
                        **kwargs):
     # sample a coherence
-    coherence = draw_from([.1, .2, .3, .4, .5, .6, .7, .8, .9])
+    if isinstance(prior, list):
+        coherence = draw_from(prior)
+    else:
+        coherence = prior.sample()
     
     # incrementally build out feature list from data
-    observed_features_so_far = ()
+    # observed_features_so_far = ()
     zarpie_features_so_far = ()
     
     # for each utterance-instance pair in data:
@@ -183,14 +198,14 @@ def pragmatic_listener(data: tuple[tuple[Utterance, Instance]],
         
         # flip observed features & add to feature list
         for feature in inst.features:
-            observed_features_so_far = observed_features_so_far + (feature, )
+            # observed_features_so_far = observed_features_so_far + (feature, )
             if(is_zarpie_feature(feature, coherence)):
                 zarpie_features_so_far = zarpie_features_so_far + (feature, )
         
         # convert to tuple; set discards duplicate features
-        observed_features_so_far = tuple(set(observed_features_so_far))
+        # observed_features_so_far = tuple(set(observed_features_so_far))
         zarpie_features_so_far = tuple(set(zarpie_features_so_far))
-        
+              
         # define zarpie concept to have those features
         zarpies = Kind("Zarpies", zarpie_features_so_far)
         
