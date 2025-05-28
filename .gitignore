@@ -2,10 +2,10 @@
 .venv*
 
 # not ready yet
-writeups/
 !writeups/generics-cogsci-2025
 
 # not public
+*pilot*
 IRB/
 model/background
 model/model-alt
@@ -28,7 +28,9 @@ scratch/
 *.mov
 *.pptx
 
-# misc R files
+# misc files
 *.Rproj.user
 *.Rproj
 rsconnect/
+settings.json
+.Rproj.user
