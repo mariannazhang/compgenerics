@@ -3,6 +3,9 @@ This repository contains information for the project computational generics. It 
 
 If you have any questions, please contact me (Marianna Zhang) at <marianna.zhang@nyu.edu>.
 
+## Writeups
+Contains posters, conference proceedings, etc. Here's a link to the [CogSci paper](https://escholarship.org/content/qt2rs3j5vq/qt2rs3j5vq.pdf).
+
 ## Data
 Contains data (in .csv) from the empirical study. 
 
