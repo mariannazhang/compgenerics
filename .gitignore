@@ -1,16 +1,15 @@
 # virtual environments
 .venv*
 
-# not ready yet
-!writeups/generics-cogsci-2025
-
 # not public
+.env
 *pilot*
 IRB/
 model/background
 model/model-alt
 model/__pycache__
-scratch/
+model/scratch/
+receipts/
 
 # tex intermediate files
 *.aux
