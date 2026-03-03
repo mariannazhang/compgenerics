@@ -10,6 +10,7 @@ model/model-alt
 model/__pycache__
 model/scratch/
 receipts/
+stimuli/*
 
 # tex intermediate files
 *.aux
