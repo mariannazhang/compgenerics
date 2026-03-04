@@ -30,7 +30,7 @@ streamlit run models/app/app.py
 Qualtrics survey files (.qsf) for each study. 
 
 ## Data
-Raw data (.csv) exported from Qualtrics for each study. 
+Data (.csv) exported from Qualtrics with Prolific IDs subsequently hashed for each study. 
 
 ## Analyses
 RMarkdown notebooks (.Rmd) and their knitted versions (.html) for visualizing and analyzing behavioral responses, and comparing with model simulated responses, for each study. 

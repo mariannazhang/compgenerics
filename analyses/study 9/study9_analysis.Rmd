@@ -1,0 +1,1510 @@
+---
+title: "Compgenerics study 9 (features) exploratory study"
+author: Marianna Zhang
+date: 2025-10-17
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+# load libraries
+library(here)       # navigating directories
+
+library(janitor)    # cleaning data
+library(scales)     # percent conversion
+library(gt)         # table formatting
+
+library(tidyverse)  # data wrangling & visualization
+library(grid)       # custom plotting
+
+library(glmmTMB)    # beta mixed effects models
+library(car)        # anova type II-III
+library(emmeans)    # pairwise comparisons
+
+library(reticulate)
+
+# don't show code or messages in knitted doc
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+
+knitr::opts_template$set(
+  plot = list(
+    echo = FALSE,
+    results = TRUE),
+  analysis = list(
+    echo = TRUE,
+    results = FALSE)
+)
+
+# prevent scientific notation for numerals
+options(scipen = 999)
+
+# format p-values for reporting
+format_p <- function(p) { 
+  if (p < .001) {
+    return("< .001")
+  } else {
+    return(paste0("= ", round(p, digits = 3)))
+  }
+}
+```
+
+```{r vis-theme, include = FALSE}
+# set visualization theme
+theme_set(
+  ggthemes::theme_few() +
+    theme(legend.title = element_text(size = 14),
+          legend.text = element_text(size = 12),
+          plot.caption = element_text(size = 8),
+          text = element_text(size = 16), # large text size for presentation figures
+          axis.ticks.x = element_blank()) # remove x-axis ticks
+)
+
+# map test feature names
+test_feature_names = c(
+  "snore_sleep" = "snore when they sleep",
+  "can_snap_toes" = "can snap with their toes",
+  "cold_hands_feet" = "have cold hands and feet",
+  "can_wiggle_ears" = "can wiggle their ears",
+  "can_roll_tongue" = "can roll their tongue",
+  
+  "can_eat_spicy" = "can eat spicy food",
+  "breakfast_late" = "eat breakfast very late",
+  "like_juice_pulp" = "like juice with pulp",
+  "five_meals_day" = "eat five meals a day",
+  "pepper_on_all" = "put pepper on all their foods",
+  
+  "collect_rocks" = "like to collect rocks",
+  "like_highfive" = "like to give high-fives",
+  "read_books" = "like to read books",
+  "cry_easily" = "cry easily",
+  "like_to_dance" = "like to dance"
+)
+
+# set visualization colors
+condition_colors = c(
+    "physical" = "#8B0000",
+    "diet" = "#006400",
+    "personality" = "#000080",
+    "heterogeneous" = "black"
+)
+
+feature_type_colors = c(
+    "physical" = "#FF7F7F",
+    "diet" = "#3CB371",
+    "personality" = "#4682B4"
+)
+
+match_colors = c(
+  "match" = "purple",
+  "heterogeneous" = "gray50",
+  "mismatch" = "gray70"
+)
+
+```
+
+# Summary
+
+Study 9 was an exploratory study to explore how generic statements about certain features affect adults' generalization across similar versus different features. 
+
+In this study, adults (n = 397, 98-100/condition) heard 15 generics about similar features of Zarpies (i.e., physical, diet and food preferences, or personality and related behaviors) or 15 generics about heterogeneous features of Zarpies (i.e., a fixed subset of 5 generics from each of the aforementioned clusters). Adults then completed an inductive potential task: in each trial, they observed a Zarpie with a novel feature, and rated its prevalence among Zarpies (0-100\%). Trials involved 5 novel features from each cluster (i.e., 5 novel physical, diet, and personality features), comprising 15 novel features in total. 
+
+We were thinking:
+
+1. If adults learn **feature-specific coherence** based on the features in the generics they heard, then adults who hear generics about certain features should generalize more within that feature type than across feature types. In other words, the physical condition may lead to higher prevalence estimates for novel physical features, compared to diet or personality conditions, etc. 
+
+2. Also, hearing generics about a broad range of features may lead to **higher overall coherence** than hearing generics about a specific set of features. In other words, the heterogeneous condition may lead to higher overall prevalence estimates than the specific feature conditions.
+
+What we found:
+
+1. We found mixed evidence for feature-specific coherence.
+
+  * In general, conditions where participants heard the generics about the same type of feature led to higher prevalence for test features in the same type (see [By test feature type match]). 
+  
+  * However, when looking at specific conditions, only the physical condition led to higher prevalence estimates for the features of the same type compared to other single-type conditions. 
+
+2. We did not find evidence for hearing heterogenous generics leading to higher coherence. 
+
+  * The heterogeneous condition did not lead to higher overall prevalence estimates than the specific feature conditions (see [Overall]).
+  
+3. We also asked participants to freeform describe what characterizes Zarpies as a group, and found descriptions that generally matched their conditions, although physical responses remained rare, even in the physical condition where they were most common.  
+
+
+# Methods
+
+```{r data-import}
+# import Qualtrics data
+data_raw_headers <- 
+  read_csv(here("data", "study9.csv"), 
+           n_max = 2) 
+  
+data_raw <- 
+  read_csv(here("data", "study9.csv"),
+           col_names = data_raw_headers %>% names(),
+           skip = 3) 
+
+# import demographic data from Prolific
+data_dem_raw <-
+  read_csv(here("data", "study9_dem.csv"))
+```
+
+```{r data-cleaning}
+data_dem <- data_dem_raw %>% 
+  # clean column names
+  clean_names() 
+
+data_all <- data_raw %>% 
+  
+  # join with demographic data
+  left_join(data_dem, 
+            by = "hashed_id") %>% 
+  
+  # clean column names
+  rename_with(~str_remove(., '_1')) %>% 
+  rename(test_features_order = InductionTask_DO) %>% 
+  
+  # join self-describe demographic columns
+  mutate(gender = coalesce(gender_4_TEXT, gender),
+         race = coalesce(race5_TEXT, race),
+         training_features_order = coalesce(physicalfeatures_DO, dietfeatures_DO,
+                                            personalityfeatures_DO, heterogeneousfeatures_DO)) %>% 
+  
+  # remove extraneous columns
+  select(-c(StartDate:pledge,
+            gender_4_TEXT, race5_TEXT,
+            sound_check_DO, FL2_DO, check_task_DO,
+            physicalfeatures_DO, dietfeatures_DO, personalityfeatures_DO, heterogeneousfeatures_DO,
+            issues:about,
+            submission_id:archived_at,
+            completion_code
+  )) %>% 
+  
+  # reorder columns
+  relocate(c(condition, training_features_order),
+           .after = sound_check) %>% 
+  
+  # add participant ID column
+  mutate(participant = row_number(),
+         .before = everything()) %>% 
+  
+  # convert prevalence to 0-1, trim endpoints
+  mutate(across(diet_can_eat_spicy:phys_snore_sleep, \(x) as.numeric(x)/100)) %>% 
+  mutate(across(diet_can_eat_spicy:phys_snore_sleep, \(x) case_when(
+    x == 0 ~ 0.01,
+    x == 1 ~ 0.99,
+    TRUE ~ x))) %>%
+  
+  # fix column types, levels
+  mutate(condition = condition %>% 
+           factor(levels = c("physical", 
+                             "diet",
+                             "personality",
+                             "heterogeneous")),
+         age = age %>% as.numeric(),
+         education = education %>% factor(
+           levels = c(
+             "Less than high school", 
+             "High school/GED", 
+             "Some college", 
+             "Bachelor's (B.A., B.S.)", 
+             "Master's (M.A., M.S.)", 
+             "Doctoral (Ph.D., J.D., M.D.)", 
+             "Prefer not to specify"))) 
+```
+
+## Participants
+
+```{r sample}
+# record total collected, failures on each check question
+sample <- data_all %>% 
+  summarize(n_collect = n(),
+            sound_check = sum(sound_check != "bird" | is.na(sound_check)),
+            attn_check = sum(attn_check != 100 | is.na(attn_check)),
+            AI = sum(AI != "No" | is.na(AI)),
+            check_task = sum(check_task != "Answering questions about a fictional group of people"))
+
+# exclude participants
+data <- data_all %>%
+  filter(
+    sound_check == "bird",
+    attn_check == 100,
+    AI == "No",
+    check_task == "Answering questions about a fictional group of people") %>% 
+  select(-c(sound_check, attn_check, AI, check_task))
+
+# record number of participants in actual sample after exclusions, exclusion rate
+sample <- sample %>% 
+  mutate(n = nrow(data),
+         n_excl = n_collect - n,
+         excl_rate = n_excl/n_collect)
+```
+
+Data was collected from `r sample$n_collect` adults (n = 98-100/condition) via Prolific on Thursday-Friday 10/16-10/17/2025. Participants required to be in the United States, fluent in English, and having not participated in prior studies under this protocol. Participants were paid $1.75 for an estimated 7 minute task. Participants were requested to particpate via desktop.
+
+```{r sample-condition}
+# Record number of participants in actual sample per condition
+sample_condition <- data %>% 
+  group_by(condition) %>% 
+  summarize(n = length(unique(participant)))
+
+sample_condition %>% 
+  ungroup() %>% 
+  gt()
+```
+
+### Exclusion criteria
+
+We recruited 400 participants, of whom `r sample$n_excl` participants (`r label_percent(0.1) (sample$excl_rate)` of all participants) were excluded for meeting at least 1 of the following exclusion criteria:
+
+* failing the sound check (i.e., did not select "bird" as the sound heard during the sound check video) (n = `r sample$sound_check` participants)
+
+* failing the attention check (i.e., did not select 100% on slider when asked to during induction task) (n = `r sample$attn_check` participants)
+
+* admitting to use of AI after being explicitly informed use was prohibited (n = `r sample$AI` participants)
+
+* failing the task check (n = `r sample$check_task` participants)
+
+### Demographics
+
+We used the Prolific representative sample feature to recruit a sample representative of the US based on Census data on sex, age, and ethnicity (Simplified US Census). 
+
+```{r dem-age}
+## Age
+dem_age <- data %>%
+  summarize(mean = mean(age),
+            sd = sd(age),
+            n = n())
+
+data %>% 
+  ggplot(aes(x = age)) +
+  geom_density() +
+  scale_x_continuous(limits = c(18, 100))
+
+dem_age %>%
+  gt() %>% 
+  tab_header("age") %>% 
+  fmt_number(
+    columns = mean:sd,
+    decimals = 2,
+    use_seps = FALSE
+  )
+```
+* The sample skewed young in age. 
+
+```{r dem-gender}
+## Gender
+dem_gender <- data %>%
+  count(gender, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_gender %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample reflected the diversity of the gender identities in the US.
+
+[(`r label_percent() (dem_gender %>% filter(gender == "Male") %>% pull(prop))` male, `r label_percent() (dem_gender %>% filter(gender == "Female") %>% pull(prop))` female, `r label_percent() (dem_gender %>% filter(gender == "Non-binary") %>% pull(prop))` non-binary, `r label_percent() (dem_gender %>% filter(gender == "Prefer not to specify") %>% pull(prop))` prefer not to specify)]: # 
+
+```{r dem-race}
+## Race
+dem_race <- data %>%
+  count(race, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_race_lumped <- data %>%
+  mutate(race_lumped = fct_lump_prop(race, 0.025)) %>%
+  count(race_lumped, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_race %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample was also racially diverse.
+
+[`r label_percent() (dem_race %>% filter(race == "White, Caucasian, or European American") %>% pull(prop))` White, Caucasian or European American; `r label_percent() (dem_race %>% filter(race == "Black or African American") %>% pull(prop))` Black or African American, `r label_percent() (dem_race %>% filter(race == "Hispanic or Latino/a") %>% pull(prop))` Hispanic or Latino/a, `r label_percent() (dem_race %>% filter(race == "East Asian") %>% pull(prop))` East Asian, `r label_percent() (dem_race %>% filter(race == "South or Southeast Asian") %>% pull(prop))` South or Southeast Asian.]: #
+
+```{r dem-education}
+## Education
+dem_education <- data %>%
+  count(education) %>% 
+  mutate(prop = n/sample$n)
+
+dem_education %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample was about evenly split on college completion. 
+
+## Procedure
+
+This study was administered as a [Qualtrics survey](https://nyu.qualtrics.com/survey-builder/SV_5cIiWqnmHxbE0Hc/edit?SurveyID=SV_5cIiWqnmHxbE0Hc), and approved by the NYU IRB (IRB-FY2023-6812).
+
+After providing their consent, participants completed a captcha, pledge not to use AI, and sound check. Participants then completed:
+
+1. **Training phase**: participants heard 15 generic statements in random order. Participants were randomly assigned to one of 4 conditions:
+
+  * Diet condition - 15 generic statements about Zarpies' diet and food preferences
+  * Physical condition - 15 generic statements about Zarpies' physical features
+  * Personality condition - 15 generic statements about Zarpies' personality and related behaviors
+  * Heterogeneous condition - a fixed subset of 5 generic statements from each of the 3 feature types above (diet, physical, personality)
+
+2. **Test phase (induction task)**: Participants completed an induction task where they imagined seeing a Zarpie with a novel feature, and estimated the prevalence of that feature among Zarpies using a slider from 0 to 100 (initialized at 0). All participants completed the same 15 trials, with order of trials randomized:
+
+  * 5 physical features
+  * 5 diet features
+  * 5 personality features
+  
+3. **Test phase (group characterization)**: Participants were then asked to respond to a freeform question asking: "What do you think characterizes Zarpies as a group?" Responses were loosely coded blind to condition by Marianna. 
+
+Participants then completed a few task completion questions, demographics, and were debriefed. 
+
+
+## Data processing
+
+Prevalence judgments were converted to a scale from 0 to 1, with 0 and 1 values trimmed to 0.01 and 0.99 to support a beta regression, since a uniform beta distribution does not include its endpoints of 0 and 1. 
+
+# Computational modeling
+
+To get a sense of feature space, we embed all the features (training and test features), as they appear in generic statements, using a sentence transformer (MiniLM). We then use PCA to reduce that multi-dimensional space down to a 2 dimensional feature space. The code doing this and generating these plots is in Python, in the project folder under "Model".
+
+## Stimuli{.tabset}
+
+### All conditions
+![All training features plus test features in 2D feature space based on embeddings from a sentence embedding model.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/stimuli.png)
+
+### Physical condition
+![Physical training features (darker circles) plus test features (lighter diamonds) in 2D feature space based on embeddings from a sentence embedding model.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/stimuli_physical.png)
+
+### Diet condition
+![Diet training features (darker circles) plus test features (lighter diamonds) in 2D feature space based on embeddings from a sentence embedding model.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/stimuli_diet.png)
+
+### Personality condition
+![Personality training features (darker circles) plus test features (lighter diamonds) in 2D feature space based on embeddings from a sentence embedding model.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/stimuli_personality.png)
+
+
+## Predicted concepts{.tabset}
+
+The training conditions are all generics, which indicate what features are known to be kind-linked. Based on what features are known to be kind-linked, our feature-specific model tries to fit a multivariate Gaussian function (3D) over feature space (2D). This multivariate Gaussian function can be thought of a "kind concept", and is centered on a mean and has a covariance matrix defining its spread. For example, if the Gaussian is centered over physical features, it will have stronger generalization to other physical features, and weaker generalization to more distant features in feature space. 
+
+We can then use the model to make predictions about novel test features based on their embedding location in feature space and the Gaussian concept:
+
+1. The Gaussian provides a probability over "kind scores" for each test feature. 
+
+2. A test feature's "kind score" in turn is entered into a beta distribution which provides a probability over the likelihood of the test feature being kind-linked. 
+
+3. The likelihood of the test feature being kind-linked then sets a Bernoulli distribution, which determines whether the test feature is in fact kind-linked. 
+
+4. Note that we have yet to link this model to prevalence judgments (or embed it in the rational speech acts framework). 
+
+It's hard to visualize a 3D Gaussian over a 2D space, so the below visualizations use ellipses to depict cross-sections from sampled Gaussians, to show approximately what the expected Gaussian might look like after each training condition.  
+
+
+### Physical condition
+
+![Example kind concepts after the physical condition.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/model_physical.png)
+
+### Diet condition
+
+![Example kind concepts after the diet condition.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/model_diet.png)
+
+
+### Personality condition
+
+![Example kind concepts after the personality condition.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/model_personality.png)
+
+### Heterogeneous condition
+
+![Example kind concepts after the heterogeneous condition.](/Users/MariannaZhang/Library/CloudStorage/Box-Box/NYU/projects/compgenerics/model/figs/study 9/model_heterogeneous.png)
+
+
+```{r import-cosine-similarity}
+# get avg cosine similarity for each test feature and condition
+test_features_avg_cosine_similarities_by_condition <-
+  read_csv(here("model", "scratch", "study 9", "study9_test_features_avg_cosine_similarities_by_condition.csv")) %>% 
+  rename("condition" = "...1") %>% 
+  mutate(condition = condition %>% 
+           str_replace_all("diet_preferences", "diet") %>%
+           str_replace_all("personality_behaviors", "personality") %>%
+           factor(levels = c("physical",
+                             "diet",
+                             "personality",
+                             "heterogeneous"))) %>% 
+  pivot_longer(cols = -condition,
+               names_to = "test_feature",
+               values_to = "cosine_similarity_avg")
+
+# get max cosine similarity for each test feature and condition
+test_features_max_cosine_similarities_by_condition <-
+  read_csv(here("model", "scratch", "study 9", "study9_test_features_max_cosine_similarities_by_condition.csv")) %>% 
+  rename("condition" = "...1") %>% 
+  mutate(condition = condition %>% 
+           str_replace_all("diet_preferences", "diet") %>%
+           str_replace_all("personality_behaviors", "personality") %>%
+           factor(levels = c("physical",
+                             "diet",
+                             "personality",
+                             "heterogeneous"))) %>% 
+  pivot_longer(cols = -condition,
+               names_to = "test_feature",
+               values_to = "cosine_similarity_max")
+```
+
+```{r tidy-data}
+# tidy data
+data_tidy <- data %>% 
+  
+  # tidy data
+  pivot_longer(cols = diet_can_eat_spicy:phys_snore_sleep,
+               names_to = "test_feature_type_name",
+               values_to = "prevalence") %>% 
+  
+  # extract the order of test features (disregarding attention check)
+  mutate(test_feature_order = map2_int(test_feature_type_name, test_features_order,
+                                       function(feat, order){
+                                         order_split <- str_split_1(order, '\\|') %>% # split test_features_order by |
+                                           discard(\(x) x == "attn_check") # discard attention check
+                                         match(feat, order_split)[1] # get first matching index
+                                       })) %>%
+  select(-test_features_order) %>% 
+  
+  # separate test feature type and abbv name
+  separate(test_feature_type_name,
+           into = c("test_feature_type", "test_feature_abbv"),
+           extra = "merge") %>% 
+  
+  # clean feature type
+  mutate(test_feature_type = case_when(
+    test_feature_type == "phys" ~ "physical",
+    test_feature_type == "diet" ~ "diet",
+    test_feature_type == "pers" ~ "personality",
+  ) %>% 
+    factor(levels = c("physical",
+                      "diet",
+                      "personality"))) %>% 
+  
+  # get full feature name
+  mutate(test_feature = test_feature_names[test_feature_abbv]) %>%
+  
+  # add match column between training and test feature type
+  mutate(condition_test_match = 
+           case_when(
+             condition == "physical" & test_feature_type == "physical" ~ "match",
+             condition == "diet" & test_feature_type == "diet" ~ "match",
+             condition == "personality" & test_feature_type == "personality" ~ "match",
+             condition == "heterogeneous" ~ "heterogeneous",
+             TRUE ~ "mismatch"
+           ) %>% 
+           factor(levels = c("match", "heterogeneous", "mismatch"))) %>% 
+  
+  # add contrast columns for testing contrasts
+  mutate(contrast_physical = if_else(condition == "physical", 3/4, -1/4),
+         .after = condition) %>% 
+  
+  # add cosine similarity
+  left_join(test_features_avg_cosine_similarities_by_condition,
+            by = c("condition", "test_feature")) %>% 
+  left_join(test_features_max_cosine_similarities_by_condition,
+            by = c("condition", "test_feature"))
+```
+
+
+# Primary results
+
+## Induction task {.tabset}
+
+Analyses of the induction task were logistic regressions unless otherwise specified, predicting prevalence (.01-.99) with participant and test feature as random intercepts. Test feature ("can snap with their toes", etc.) is technically nested within test feature type (physical, diet, personality), but since each test feature is unique to each test feature type, a model with the nesting term is analytically equivalent to the previous model, so the nesting term was omitted for simplicity of specification. 
+
+### By test feature
+
+We can look at how prevalence judgments vary by condition and individual test feature. 
+
+
+```{r plot-induction-testfeature-condition}
+# summary plot of prevalence by test feature type and condition
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = test_feature,
+             color = condition)) + 
+  
+  # let x-axis be free
+  
+  facet_grid(cols = vars(test_feature_type),
+             scales = "free_x") +
+  
+  # condition colors
+  scale_color_manual(values = condition_colors) +
+  
+  # add data points
+  geom_jitter(alpha = 0.007,
+              position = position_jitterdodge(jitter.width = .3,
+                                              dodge.width = .6)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = .6),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = .6),
+               size = 2) +
+  
+  # customize axes
+  theme(axis.text.x = element_text(angle = 45,
+                                   hjust = 1)) +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_discrete(name = "test feature") +
+  
+  # add title
+  ggtitle("Prevalence by test feature and condition")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_testfeature_condition.png")
+```
+
+
+### By test feature type
+
+We can look at how prevalence judgments vary by condition and test feature type (i.e., physical, diet, or personality). 
+
+If the chosen clusters capture some systematicity in how people generalize, the physical condition should make the highest prevalence estimates for physical test features, the diet condition for the diet test features, and the personality condition for personality test features. This appears to be true for the physical and personality conditions, but not for the diet condition.  
+
+```{r plot-induction-testfeaturetype-condition}
+# summary plot of prevalence by test feature type and condition
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = test_feature_type,
+             color = condition)) + 
+  
+  # condition colors
+  scale_color_manual(values = condition_colors) +
+  
+  # add data points
+  geom_jitter(alpha = 0.007,
+              position = position_jitterdodge(jitter.width = .3,
+                                              dodge.width = .6)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = .6),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = .6),
+               size = 2) +
+  
+  # customize axes
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_discrete(name = "test feature type") +
+  
+  # add title
+  ggtitle("Prevalence by test feature type and condition")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_testfeaturetype_condition.png",
+       height = 5,
+       width = 7.5)
+```
+
+```{r plot-induction-condition-testfeaturetype}
+# summary plot of prevalence by condition and test feature type
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = condition,
+             color = test_feature_type)) + 
+  
+  # condition colors
+  scale_color_manual(values = feature_type_colors) +
+  
+  # add data points
+  geom_jitter(alpha = 0.007,
+              position = position_jitterdodge(jitter.width = .3,
+                                              dodge.width = .6)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = .6),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = .6),
+               size = 2) +
+  
+  # customize axes
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  
+  # customize legend name
+  labs(color = "test feature type") +
+  
+  # add title
+  ggtitle("Prevalence by condition and test feature type")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_condition_testfeaturetype.png",
+       height = 5,
+       width = 7.5)
+```
+
+```{r analysis-condition-testfeaturetype, echo = TRUE, include = TRUE}
+# condition * test feature type
+glmm_condition_testfeaturetype <-
+  glmmTMB(prevalence ~ condition * test_feature_type + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_condition_testfeaturetype %>% 
+  Anova()
+
+glmm_condition_testfeaturetype %>% 
+  emmeans(~ condition * test_feature_type) %>%
+  contrast(method = "pairwise") %>%
+  summary(adjust = "FDR")
+```
+Indeed, there is a significant interaction between condition and test feature type in an ANOVA conducted on a logistic regression with condition, test feature type, and their interaction as fixed effects, and with participant and test feature as random intercepts ($\chi$(6) = 86.17, *p* < .001). There is also a main effect of test feature type ($\chi$(2) = 6.62, *p* = .037) and a marginal effect of condition ($\chi$(3) = 6.49, *p* = .090). 
+
+When rating the prevalence of physical features, the physical condition produced significantly higher prevalence estimates than the diet condition (FDR-corrected *z* = 4.26, *p* = .0014) or personality condition (*z* = 3.33, *p* = .011), but no different from the heterogeneous condition (*z* = 2.28, *p* = .11). 
+
+When rating the prevalence of diet features, the diet condition did not produce different prevalence estimates than the physical condition (*z* = 0.88, *p* = .47), personality condition (*z* = 1.23, *p* = 0.36), or heterogeneous condition (*z* = 1.01, *p* = .43). 
+
+When rating the prevalence of personality features, the personality condition produced only marginally higher prevalence estimates than the diet condition (*z* = 2.48, *p* = .072), and heterogeneous condition (*z* = 2.13, *p* = .11), and no different from the physical condition (*z* = 1.03, *p* = .43).
+
+
+```{r analysis-condition-testfeaturetype-phys, echo = TRUE, include = TRUE}
+# make contrast matrix for condition
+C <- matrix(
+  c(
+    # physical  diet   pers    hetero
+      1,       -1/3,  -1/3,   -1/3,    # Contrast 1: physical vs others
+      0,        1,    -1,      0,      # Contrast 2: diet vs personality
+      0,        1,     0,     -1,      # Contrast 3: diet vs heterogeneous
+      1,        1,     1,      1       # Overall mean (intercept)
+  ),
+  nrow = 4,
+  byrow = TRUE
+)
+
+# assign row names
+rownames(C) <- levels(data_tidy$condition)
+
+# apply and center columns
+contrasts(data_tidy$condition) <- C[,1:3]  # first 3 rows are true contrasts
+
+
+# condition * test feature type
+glmm_condition_testfeaturetype_phys <-
+  glmmTMB(prevalence ~ condition * test_feature_type + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_condition_testfeaturetype_phys %>% 
+  summary()
+```
+
+
+### By test feature type match
+
+Another way to look at the data is to code responses by whether the test feature type matched the training condition. If they match (e.g., diet condition responding to a diet test question), we can code that as a match, or if they mismatch (e.g., diet condition responding to a personality test question), we can code that as a mismatch. We can leave the heterogeneous condition as its own category, since it's a semi-match to everything. 
+
+If the chosen clusters capture some systematicity in how people generalize, matches should result in higher prevalence estimates than mismatches. Indeed, that's what we find. 
+
+
+```{r plot-induction-testfeature-condition-match}
+# summary plot of prevalence by test feature type and condition
+
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = test_feature_type,
+             group = condition,
+             color = condition_test_match)) + 
+  
+  # condition colors
+  scale_color_manual(values = match_colors) +
+  
+  # add data points
+  geom_jitter(alpha = 0.007,
+              position = position_jitterdodge(jitter.width = .3,
+                                              dodge.width = .6)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = .6),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = .6),
+               size = 2) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_discrete(name = "test feature type") +
+  
+  # customize legend name
+  labs(color = "condition and \ntest feature type") +
+  
+  # add title
+  ggtitle("Prevalence by test feature type and condition")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_testfeaturetype_condition_match.png",
+       height = 5,
+       width = 7.5)
+```
+
+```{r plot-induction-match}
+# summary plot of prevalence by test feature type and condition
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = condition_test_match,
+             color = condition_test_match)) +
+  
+  # color palette
+  scale_color_manual(values = match_colors) +
+  
+  # add data points
+  geom_jitter(alpha = 0.007,
+              position = position_jitter(width = .3)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               size = 2) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_discrete(name = "condition and test feature type match?") +
+  
+  # remove legend
+  theme(legend.position = "none") +
+  
+  # add title
+  ggtitle("Prevalence by condition and test feature type match")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_match.png",
+       height = 5,
+       width = 5.75)
+```
+
+```{r analysis-match, echo = TRUE, include = TRUE}
+# condition
+glmm_condition_test_match <-
+  glmmTMB(prevalence ~ condition_test_match + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_condition_test_match %>% 
+  Anova()
+
+glmm_condition_test_match %>% 
+  emmeans(~ condition_test_match) %>% 
+  contrast(method = "pairwise") %>% 
+  summary()
+```
+Indeed, there is a main effect of whether condition and test variables match (match, hetereogenous, or mismatch) on prevalence, in an ANOVA conducted on a logistic regression with match as a main effect, and with participant and test feature as random intercepts ($\chi$(2) = 74.03, *p* < .001). Post-hoc FDR-corrected pairwise comparisons reveal that the matching condition results in higher prevalence estimates of test features than the heterogeneous condition (*z* = 8.58, *p* < .001) or the mismatching conditions (*z* = 2.29, *p* = .034).
+
+
+### By cosine similarity
+
+Instead of grouping features into discrete types, we can also look at the distance (cosine similarity) between each individual test feature to the training features presented in each condition, in the multidimensional embedding space. 
+
+For each test feature, we can calculate the average distance to training features in each condition, and see if that metric of cosine similarity predicts measures of prevalence. 
+
+```{r analysis-cosine-similarity, opts.label='analysis'}
+# average cosine similarity of the test feature, to the training features in that condition
+glmm_cosine_similarity_avg <-
+  glmmTMB(prevalence ~ cosine_similarity_avg + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_cosine_similarity_avg %>% 
+  summary()
+```
+Indeed, there is a significant effect of **average cosine similarity** of the test feature to the various training features in the condition ($z$ = `r summary(glmm_cosine_similarity_avg)$coefficients$cond["cosine_similarity_avg", "z value"] %>% round(2)`, *p* `r summary(glmm_cosine_similarity_avg)$coefficients$cond["cosine_similarity_avg", "Pr(>|z|)"] %>% format_p()`), such that higher average cosine similarity predicts higher prevalence estimates, in a logistic model with random intercepts per participant and test feature. 
+
+
+```{r plot-cosine-similarity-vs-prevalence, opts.label='plot'}
+# avg cosine similarity vs prevalence
+data_tidy %>% 
+  group_by(condition, test_feature_type, test_feature) %>% 
+  summarize(avg_cos_sim = mean(cosine_similarity_avg),
+            avg_prevalence = mean(prevalence)) %>% 
+  
+  ggplot(aes(x = avg_cos_sim, y = avg_prevalence)) +
+  
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_continuous(name = "average cosine similarity to training features") + 
+  labs(caption = "dots = each test feature (15 feature), within condition (3 conditions)")
+
+ggsave(path = "figs",
+       "prevalence_by_cosine_similarity.png")
+```
+
+```{r plot-cosine-similarity-vs-prevalence-condition, opts.label='plot'}
+# cosine similarity vs prevalence by condition
+data_tidy %>% 
+  group_by(condition, test_feature_type, test_feature) %>% 
+  summarize(avg_cos_sim = mean(cosine_similarity_avg),
+            avg_prevalence = mean(prevalence)) %>% 
+  
+  ggplot(aes(x = avg_cos_sim, y = avg_prevalence, color = condition)) +
+  
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_continuous(name = "average cosine similarity to training features")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_cosine_similarity_condition.png")
+```
+
+We can also focus on maximum cosine similarity, i.e., the distance from the test feature to the closest training feature in a given condition, and see if that metric predicts prevalence judgments. 
+
+```{r analysis-cosine-similarity-max, opts.label='analysis'}
+# max cosine similarity of the test feature, to the closest training features in that condition
+glmm_cosine_similarity_max <-
+  glmmTMB(prevalence ~ cosine_similarity_max + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_cosine_similarity_max %>% 
+  summary()
+```
+
+Indeed, maximum cosine similarity is also a significant predictor of prevalence estimates ($z$ = `r summary(glmm_cosine_similarity_max)$coefficients$cond["cosine_similarity_max", "z value"] %>% round(2)`, *p* `r summary(glmm_cosine_similarity_max)$coefficients$cond["cosine_similarity_max", "Pr(>|z|)"] %>% format_p()`), such that higher maximum cosine similarity predicts higher prevalence estimates, in a logistic model with random intercepts per participant and test feature.
+
+```{r analysis-cosine-similarity-avg-vs-max, opts.label='analysis'}
+glmmTMB(prevalence ~ cosine_similarity_avg + cosine_similarity_max + (1|participant) + (1|test_feature), 
+          data = data_tidy, 
+          family = beta_family(link = "logit"))  %>% 
+  summary()
+```
+
+However, when including both average and max cosine similarity as predictors, **only average cosine similarity remains a significant predictor of prevalence estimates**, suggesting that people are integrating over all training features in the condition, rather than just attending to the most similar training feature.
+
+
+
+### Overall
+
+We can look at prevalence estimates overall. If the heterogeneous condition leads to the highest overall coherence, we should see the highest prevalence estimates in that condition overall. However, that's not what we find. 
+
+```{r plot-induction-condition}
+# summary plot of prevalence by condition
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = condition,
+             color = condition)) + 
+  
+  # condition colors
+  scale_color_manual(values = condition_colors) +
+  scale_fill_manual(values = condition_colors) +
+  
+  # add data points
+  geom_point(alpha = 0.005,
+              position = position_jitterdodge(jitter.width = .3,
+                                              dodge.width = 1)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = 1),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = 1),
+               size = 2) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  
+  # remove legend
+  theme(legend.position = "none") +
+  
+  # add title
+  ggtitle("Prevalence by condition")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_condition.png",
+       height = 5,
+       width = 5)
+```
+
+```{r analysis-condition, echo = TRUE, include = TRUE}
+# condition * test feature type
+glmm_condition <-
+  glmmTMB(prevalence ~ condition + (1|participant) + (1|test_feature_type),
+          data = data_tidy, 
+          family = beta_family(link = "logit"))
+
+glmm_condition %>% 
+  Anova()
+
+glmm_condition %>% 
+  emmeans("condition") %>%
+  contrast(method = "pairwise") %>%
+  summary(adjust = "FDR")
+```
+
+There is only a marginal effect of condition on prevalence ($\chi$(3) = 6.48, *p* = .091). Post-hoc FDR-corrected pairwise comparisons reveal no significant differences between any conditions (*p*s > .10).
+
+### By test feature, vs model
+
+We can get the model's predictions and compare those to people's ratings of prevalence. For now, we get the model's "kind score" for each test feature, which is a measure of the expected value of the Gaussian function at that location in feature space. 
+
+```{r model-scores}
+# get model scores for each feature
+model_test_feature_scores <-
+  read_csv(here("model", "scratch", "study 9", "study9_model_test_feature_scores.csv")) %>% 
+  
+  # clean and order condition, feature type labels
+  mutate(condition = case_when(
+    condition == "diet_preferences" ~ "diet",
+    condition == "personality_behaviors" ~ "personality",
+    TRUE ~ condition) %>% 
+      factor(levels = c("physical",
+                        "diet",
+                        "personality",
+                        "heterogeneous",
+                        "baseline"))) %>% 
+  mutate(feature_type = case_when(
+    feature_type == "diet_preferences" ~ "diet",
+    feature_type == "personality_behaviors" ~ "personality",
+    TRUE ~ feature_type) %>% 
+      factor(levels = c("physical",
+                        "diet",
+                        "personality"))) %>% 
+  # remove baseline condition
+  filter(condition != "baseline")
+```
+
+```{r prevalence-vs-model}
+# get average prevalence means
+prevalence_means <- data_tidy %>% 
+  group_by(condition, test_feature_type, test_feature) %>% 
+  summarize(mean_prevalence = mean(prevalence)) 
+
+# add column for model predictions
+prevalence_vs_model <- prevalence_means %>% 
+  left_join(model_test_feature_scores,
+            by = c("condition", "test_feature_type" = "feature_type", "test_feature"))
+```
+
+
+```{r prevalence-vs-model-by-testfeaturetype-plot}
+# get r^2 by test feature type
+r2_by_condition <- prevalence_vs_model %>%
+  group_by(test_feature_type) %>%
+  summarise(
+    r2 = summary(lm(mean_prevalence ~ score))$r.squared
+  ) %>%
+  mutate(
+    label = paste0("r² = ", round(r2, 2)),
+    # set annotation position (adjust if needed)
+    x = 0.1, 
+    y = 0.95
+  )
+
+# scatterplot mean prevalence vs model score by test feature type
+prevalence_vs_model %>% 
+  
+  # make plot
+  ggplot(aes(x = score,
+             y = mean_prevalence,
+             color = condition)) + 
+  
+  # facet by condition
+  facet_wrap(vars(test_feature_type)) +
+  
+  # condition colors
+  scale_color_manual(values = condition_colors) +
+  
+  # add data points
+  geom_point() +
+  
+  # add regression line
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "black") +
+  
+  # customize axes
+  scale_y_continuous(name = "mean rated prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_continuous(name = "model score") +
+  
+  # add r^2 as annotation to each facet
+  geom_text(data = r2_by_condition,
+            aes(x = x, y = y, label = label),
+            color = "black",
+            size = 4,
+            hjust = 0) +
+  
+  # add title
+  ggtitle("Mean prevalence vs model score by test feature type")
+
+ggsave(path = "figs",
+       filename = "prevalence_vs_model_score_by_testfeaturetype.png",
+       height = 5,
+       width = 7.5)
+```
+
+```{r prevalence-vs-model-by-condition-plot}
+# get r^2 by condition
+r2_by_condition <- prevalence_vs_model %>%
+  group_by(condition) %>%
+  summarise(
+    r2 = summary(lm(mean_prevalence ~ score))$r.squared
+  ) %>%
+  mutate(
+    label = paste0("r² = ", round(r2, 2)),
+    # set annotation position (adjust if needed)
+    x = 0.1, 
+    y = 0.95
+  )
+
+# scatterplot mean prevalence vs model score by condition
+prevalence_vs_model %>% 
+  
+  # make plot
+  ggplot(aes(x = score,
+             y = mean_prevalence,
+             color = test_feature_type)) + 
+  
+  # facet by condition
+  facet_wrap(vars(condition)) +
+  
+  # condition colors
+  scale_color_manual(values = condition_colors) +
+  
+  # add data points
+  geom_point() +
+  
+  # add regression line
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "black") +
+  
+  # customize axes
+  scale_y_continuous(name = "mean rated prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  scale_x_continuous(name = "model score") +
+  labs(color = "test feature type") +
+  
+  # add r^2 as annotation to each facet
+  geom_text(data = r2_by_condition,
+            aes(x = x, y = y, label = label),
+            color = "black",
+            size = 4,
+            hjust = 0) +
+  
+  # add title
+  ggtitle("Mean prevalence vs model score by condition")
+
+ggsave(path = "figs",
+       filename = "prevalence_vs_model_score_by_condition.png")
+```
+
+
+## Group characterization
+
+Participants were asked to describe what characterizes Zarpies as a group, with responses coded by Marianna blind to condition. 
+
+Eyeballing the plot below, participants in the diet and personality conditions often characterized Zarpies in terms of their diet or personality, seemingly moreso than in the other conditions. 
+
+In the physical condition, participants appeared more likely to describe Zarpies in terms of physical characteristics than the other conditions, but this effect seems less pronounced than in the diet and personality conditions, with physical descriptions remaining a minority of descriptions in the physical condition. (maybe a bit more when merged with appearance, but still remaining below a majority) 
+
+```{r plot-groupcharact}
+# stacked bar plot of group_charact_coded by condition
+data_tidy %>% 
+  
+  # summarize group_charact_coded
+  group_by(condition) %>% 
+  count(group_charact_coded) %>% 
+  mutate(prop = n/sum(n)) %>% 
+
+  # make plot
+  ggplot(aes(y = n,
+             x = condition,
+             fill = group_charact_coded)) + 
+  
+  # add data points
+  geom_bar(position = "fill",
+           stat = "identity") +
+  
+  # customize axes
+  theme(panel.border = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 6)) +
+  scale_y_continuous(name = NULL,
+                     labels = scales::percent) +
+  
+  # add title
+  ggtitle("Group characterization by condition",
+          "What do you think characterizes Zarpies as a group?")
+
+ggsave(path = "figs",
+       filename = "group_charact_by_condition.png",
+       height = 5,
+       width = 10)
+```
+
+TBD: analyses of the frequency of these codes
+
+# Secondary results
+
+
+## Straight-lining
+
+```{r straightlining}
+# exact straightlining (50)
+straightline_50_participants <-
+  data_tidy %>% 
+  group_by(participant) %>%
+  filter(all(prevalence == 0.50)) %>% 
+  distinct(participant)
+
+# approximate straightlining (48-52)
+straightline_approx_participants <-
+  data_tidy %>% 
+  group_by(participant) %>%
+  filter(all(prevalence %in% seq(0.48, 0.52, 0.01))) %>% 
+  distinct(participant)
+```
+
+Despite the induction task plots suggesting a lot of anchoring around the 50\% marker, straightlining was not a pervasive phenomenon. 
+
+* `r straightline_50_participants %>% nrow()` out of `r sample$n` participants (`r label_percent(0.01)(nrow(straightline_50_participants)/sample$n)`) answered 50\% to all test questions. 
+
+* `r straightline_approx_participants %>% nrow()` out of `r sample$n` participants (`r label_percent(0.01)(nrow(straightline_approx_participants)/sample$n)`) answered 48-52% to all test questions, a looser criterion.
+
+
+
+## Test features order effects
+
+All participants rated the prevalence of the same set of 15 test features, in random order. Did the order of test feature/prevalence judgment questions matter for prevalence judgments? 
+
+```{r analysis-test-order-effects}
+glmm_testfeatureorder <-
+  glmmTMB(prevalence ~ condition * test_feature_type * test_feature_order + (1|participant) + (1|test_feature),
+        data = data_tidy,
+        family = beta_family(link = "logit"))
+
+glmm_testfeatureorder %>% 
+  Anova()
+
+glmmTMB(prevalence ~ test_feature_order + (1|participant) + (1|test_feature),
+        data = data_tidy,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+There is a main effect of test feature order on prevalence, but no significant interactions with condition, test feature type, or both. This suggests that while there may be some order effects in prevalence judgments, these effects do not differ by condition or test feature type.
+
+```{r plot-induction-testfeatureorder}
+# summary plot of prevalence by test feature order
+data_tidy %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = test_feature_order)) + 
+  
+  # add data points
+  geom_jitter(alpha = 0.01,
+              position = position_jitter(width = .3)) +
+  
+  # add confidence intervals + means
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               size = 2) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  
+  # remove legend
+  theme(legend.position = "none") +
+  
+  # add title
+  ggtitle("Prevalence by test feature order")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_testfeatureorder.png")
+```
+
+
+# Power analysis
+
+```{r power-analysis-all, results = 'hide', echo = TRUE}
+# set simulation parameters
+set.seed(42) # reproducibility
+
+n_sim <- # per sample size
+  300
+
+# total sample sizes
+sample_sizes_to_test <- 
+  c(
+    50*4,
+    75*4,
+    100*4,
+    125*4) 
+
+# set criteria for power
+alpha <- 0.05
+
+# function to run a simulation
+run_simulation <- function(sample_size_total){
+  
+  # identify _ participants in each condition to resample
+  participants_to_resample <- bind_rows(
+    data %>% 
+      filter(condition == "physical") %>% 
+      select(participant) %>% 
+      slice_sample(n = sample_size_total/4,
+                   replace = TRUE),
+    data %>% 
+      filter(condition == "diet") %>% 
+      select(participant) %>% 
+      slice_sample(n = sample_size_total/4,
+                   replace = TRUE),
+    data %>% 
+      filter(condition == "personality") %>% 
+      select(participant) %>% 
+      slice_sample(n = sample_size_total/4,
+                   replace = TRUE),
+    data %>% 
+      filter(condition == "heterogeneous") %>% 
+      select(participant) %>% 
+      slice_sample(n = sample_size_total/4,
+                   replace = TRUE),
+  ) 
+  
+  # resample data using list of participants to resample
+  resampled_data <- data %>%
+    inner_join(participants_to_resample,
+               by = "participant") %>% 
+    mutate(observation = row_number(),
+           .before = everything())
+  
+  # tidy data
+  resampled_data_tidy <- resampled_data %>% 
+    
+    pivot_longer(cols = diet_can_eat_spicy:phys_snore_sleep,
+                 names_to = "test_feature_type_name",
+                 values_to = "prevalence") %>% 
+    
+    # extract the order of test features (disregarding attention check)
+    mutate(test_feature_order = map2_int(test_feature_type_name, test_features_order,
+                                         function(feat, order){
+                                           order_split <- str_split_1(order, '\\|') %>% # split test_features_order by |
+                                             discard(\(x) x == "attn_check") # discard attention check
+                                           match(feat, order_split)[1] # get first matching index
+                                         })) %>%
+    select(-test_features_order) %>% 
+    
+    # separate test feature type and abbv name
+    separate(test_feature_type_name,
+             into = c("test_feature_type", "test_feature_abbv"),
+             extra = "merge") %>% 
+    
+    # clean feature type
+    mutate(test_feature_type = case_when(
+      test_feature_type == "phys" ~ "physical",
+      test_feature_type == "diet" ~ "diet",
+      test_feature_type == "pers" ~ "personality",
+    ) %>% 
+      factor(levels = c("physical",
+                        "diet",
+                        "personality"))) %>% 
+    
+    # get full feature name
+    mutate(test_feature = test_feature_names[test_feature_abbv]) %>%
+    
+    # add match column between training and test feature type
+    mutate(condition_test_match = 
+             case_when(
+               condition == "physical" & test_feature_type == "physical" ~ "match",
+               condition == "diet" & test_feature_type == "diet" ~ "match",
+               condition == "personality" & test_feature_type == "personality" ~ "match",
+               condition == "heterogeneous" ~ "heterogeneous",
+               TRUE ~ "mismatch"
+             ) %>% 
+             factor(levels = c("match", "heterogeneous", "mismatch"))) %>% 
+    
+    # add contrast columns for testing contrasts
+    mutate(contrast_physical = if_else(condition == "physical", 3/4, -1/4),
+           .after = condition) %>% 
+    
+    # add cosine similarity
+    left_join(test_features_avg_cosine_similarities_by_condition,
+              by = c("condition", "test_feature")) %>% 
+    left_join(test_features_max_cosine_similarities_by_condition,
+              by = c("condition", "test_feature"))
+    
+  
+  
+  # fit models & get p-values
+  
+  
+  # average cosine similarity of the test feature, to the training features in that condition
+  glmm_cosine_similarity_avg <-
+    glmmTMB(prevalence ~ cosine_similarity_avg + (1|observation) + (1|test_feature), 
+            data = resampled_data_tidy, 
+            family = beta_family(link = "logit"))
+  
+  glmm_cosine_similarity_avg_p <-
+    summary(glmm_cosine_similarity_avg)$coefficients$cond["cosine_similarity_avg", "Pr(>|z|)"]
+  
+  # match
+  glmm_condition_test_match <-
+    glmmTMB(prevalence ~ condition_test_match + (1|observation) + (1|test_feature), 
+          data = resampled_data_tidy, 
+          family = beta_family(link = "logit"))
+  
+  glmm_condition_test_match_p <- 
+    glmm_condition_test_match %>% 
+    emmeans(~ condition_test_match) %>% 
+    contrast(method = "pairwise") %>% 
+    summary() %>% 
+    pull(p.value) %>% 
+    .[2] # match vs mismatch
+  
+  
+  # return p-values
+  return(
+    list("glmm_cosine_similarity_avg_p" = glmm_cosine_similarity_avg_p,
+         "glmm_condition_test_match_p" = glmm_condition_test_match_p)
+    )
+}
+
+
+# set up simulation grid with parameters
+sim_grid <- 
+  crossing(
+    alpha = alpha,
+    sample_size_total = sample_sizes_to_test, 
+    simulation = rep(1:n_sim, length(sample_sizes_to_test)) # __ simulations per each possible sample size
+  ) 
+
+# run simulations for each row
+sim_results <- sim_grid %>% 
+  rowwise() %>%
+  mutate(
+    vals = list(run_simulation(sample_size_total)),
+    
+    glmm_cosine_similarity_avg_p = vals$glmm_cosine_similarity_avg_p, 
+    glmm_condition_test_match_p = vals$glmm_condition_test_match_p,
+  ) %>%
+  ungroup() 
+
+
+# calculate power
+power <- sim_results %>%
+  group_by(sample_size_total) %>%
+  summarize(
+    glmm_cosine_similarity_avg = mean(glmm_cosine_similarity_avg_p < alpha),
+    glmm_condition_test_match_p = mean(glmm_condition_test_match_p < alpha),
+  ) 
+
+# save results
+write_csv(power, "study9_features_power_analysis.csv")
+```
+
+```{r power-results-all, echo=FALSE}
+# pretty table
+power %>% 
+  gt() %>% 
+  tab_header(
+    title = "Power on target effects by total sample size",
+    subtitle = "based on Study 9 data; total sample size across 4 conditions"
+  ) %>%
+  
+  cols_label(
+    sample_size_total = "total sample size",
+    
+    glmm_cosine_similarity_avg = "avg cosine similarity",
+    glmm_condition_test_match_p = "match vs mismatch (ignore hetero)"
+  )
+
+```
+
+
+
+
+# Footnotes
+
+```{r}
+sessionInfo()
+```

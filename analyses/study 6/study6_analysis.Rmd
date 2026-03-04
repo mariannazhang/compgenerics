@@ -1,0 +1,529 @@
+---
+title: "Compgenerics study 6 analysis"
+author: "Jessica Stephenson & Marianna Zhang"
+output:
+  pdf_document:
+    toc: true
+  word_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+---
+
+```{r libraries, include=FALSE}
+library(here)       # directory management
+
+library(janitor)    # data cleaning
+library(scales)     # percent conversion
+
+library(tidyverse)  # data wrangling & visualization
+
+library(car)        # anova type II-III
+library(glmmTMB)    # beta mixed effects models
+library(lmerTest)   # lmer with p-value
+library(emmeans)    # pairwise comparisons
+```
+
+
+```{r setup, include=FALSE}
+# don't show code or warnings/messages in knitted doc by default
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+
+knitr::opts_template$set(
+  plot = list(
+    echo = FALSE,
+    results = TRUE),
+  analysis = list(
+    echo = TRUE,
+    results = FALSE)
+)
+
+
+# prevent scientific notation for numerals
+options(scipen = 999)
+
+# format p-values for reporting
+format_p <- function(p) { 
+  if (p < .001) {
+    return("< .001")
+  } else {
+    return(paste0("= ", round(p, digits = 3)))
+  }
+}
+```
+
+
+# Study 6 methods (Jess)
+
+```{r summary-statistics-6, opts.label='analysis'}
+study6 <- read.csv(here("data", "full_study6.csv"))
+
+# report n
+n6 <- nrow(study6)
+s6_generic <- sum(study6$condition == "generic")
+s6_specific <- sum(study6$condition == "specific")
+s6_baseline <- sum(study6$condition == "baseline")
+
+#report age breakdown
+mean_age6 <- mean(study6$Age, na.rm=TRUE) #need to remove -1
+sd_age6 <- sd(study6$Age, na.rm=TRUE) #need to remove -1
+min_age6 <- 18 #hard coded, weird response says age is -1
+max_age6 <- max(study6$Age, na.rm = TRUE)
+
+
+#report sex breakdown
+n_fem6 <- (sum(study6$Sex=="Female",na.rm=T)/n6)*100
+n_male6 <- (sum(study6$Sex=="Male", na.rm=T)/n6)*100
+ 
+#report ethnicity breakdown
+race6 <- xtabs(~Ethnicity.simplified, study6)
+prop.table(race6)
+  
+#report gender breakdown
+sex6 <- xtabs(~Sex, study6)
+prop.table(sex6*100)
+
+```
+
+-   Study 6 is a replication of study 5 with an additional "baseline" condition added. In this condition, participants were not shown any video, and immediately completed the induction task.
+-   Adult participants (n = `r n6`; `r round(n_fem6, digits = 1)`%
+    female, `r round (n_male6, digits = 1)`% male; M~age~ =
+    `r round(mean_age6, digits = 2)`, SD~age~ =
+    `r round(sd_age6, digits = 2)`, range = `r min_age6`-`r max_age6`)
+    split into three conditions: generic (n = `r s6_generic`), specific
+    (n = `r s6_specific`), or baseline (n = `r s6_baseline`)
+
+
+# Study 6 analysis (Jess)
+```{r, opts.label='analysis'}
+##induction task
+s6_ind_long <- read.csv(here("data", "ind_ordered_s6.csv")) 
+s6_ind_long$trial <- as.factor(s6_ind_long$trial)
+
+#set levels
+levels(s6_ind_long$trial) <- list(trial.1 = "1", trial.2 = "2", trial.3 = "3", trial.4 = "4", trial.5 = "5", trial.6 = "6", trial.7 = "7", trial.8 = "8", trial.9 = "9", trial.10 = "10", trial.11 = "11", trial.12 = "12", trial.13 = "13", trial.14 = "14", trial.15 = "15", trial.16 = "16", trial.17 = "17")
+
+s6_ind_long <- s6_ind_long %>% 
+  mutate(condition = factor(condition,
+                            levels = c("generic", "specific", "baseline")))
+
+#summary stats
+s6_ind_long %>%
+  dplyr::group_by(condition) %>%
+  dplyr::summarize(mean=mean(prevalence, na.rm = TRUE))
+
+#multilevel linear model with a random intercept for ID
+model<-lmer(prevalence ~ condition + (1|ID), data=s6_ind_long)
+summary(model)
+Anova(model)
+```
+
+```{r violin-plot, opts.label="plot"}
+#plot of means
+ggbetweenstats(
+  data = s6_ind_long,
+  x = condition,
+  y = prevalence,
+  type = "parametric",
+  var.equal = TRUE,
+  plot.type = "boxviolin",
+  pairwise.comparisons = TRUE,
+  pairwise.display = "significant",
+  centrality.plotting = TRUE,
+  bf.message = FALSE,
+  title = "Aggregate Induction Results Study 6"
+)
+
+#visualizing trial order effect
+s6_ind_long %>% 
+ggplot(aes(x = trial, y = prevalence, fill = condition)) + 
+  geom_boxplot() +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1,))+
+  ggtitle("Study 6: Prevalence by Trial") +
+  facet_wrap(~condition)
+
+
+
+#basic violin plot
+ggplot(s6_ind_long, aes(prevalence, condition,fill=condition, color = condition),show.legend = FALSE) + 
+  geom_violin(alpha=.9, show.legend = FALSE)+
+  scale_y_discrete(labels=c("one_obs" = "one observation"))+
+  stat_summary(fun.data = "mean_cl_boot", fun.args=list(B=1000), geom = "errorbar",width = .5, colour = "black", show.legend = FALSE) + #bootstrapped CI
+  stat_summary(fun = "mean", geom = "point", colour = "black", size = 0.2, show.legend = FALSE) + #mean
+  labs(x = "Prevalence Rating", y = "Condition")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + ggtitle("Aggregate Induction Results Study 6")
+
+```
+
+
+
+# Study 6 analysis (Marianna)
+
+```{r import-model-means}
+# import model simulated means
+df_prag_feature <- read_csv(here("model/scratch/study 6", "df_prag_feature.csv"))
+df_lit_feature <- read_csv(here("model/scratch/study 6", "df_lit_feature.csv"))
+df_base_feature <- read_csv(here("model/scratch/study 6", "df_base_feature.csv"))
+
+# get model means per condition, feature
+df_prag_feature_means <- df_prag_feature %>% 
+  group_by(condition, feature) %>% 
+  summarize(prag_prevalence_mean = mean(prevalence, na.rm = TRUE))
+
+df_lit_feature_means <- df_lit_feature %>%
+  group_by(condition, feature) %>% 
+  summarize(lit_prevalence_mean = mean(prevalence, na.rm = TRUE))
+
+df_base_feature_means <- df_base_feature %>%
+  group_by(condition, feature) %>% 
+  summarize(base_prevalence_mean = mean(prevalence, na.rm = TRUE))
+```
+
+```{r clean-data}
+# clean data
+s6_data_tidy <- study6 %>% 
+  
+  # reformat to tibble
+  as.tibble() %>% 
+  clean_names() %>% 
+  rename(participant = id) %>% 
+  
+  # tidy
+  pivot_longer(cols = live_caves:paint_hands,
+               names_to = "feature",
+               values_to = "prevalence") %>% 
+  relocate(feature:prevalence,
+          .after = "condition") %>% 
+  
+  # rescale, truncate prevalence
+  mutate(prevalence = prevalence / 100) %>% 
+  mutate(prevalence = case_when(prevalence == 0 ~ 0.01,
+                                prevalence == 1 ~ 0.99,
+                                TRUE ~ prevalence)) %>% 
+  
+  # join in model condition/feature means
+  left_join(df_prag_feature_means, by = c("condition", "feature")) %>%
+  left_join(df_lit_feature_means, by = c("condition", "feature")) %>%
+  left_join(df_base_feature_means, by = c("condition", "feature")) %>% 
+  
+  relocate(contains("prevalence"),
+           .after = "feature")
+
+# get data means per condition, feature
+s6_data_per_condition_feature <- s6_data_tidy %>% 
+  group_by(condition, feature) %>% 
+  summarize(prevalence_mean = mean(prevalence, na.rm = TRUE)) %>% 
+  
+  # join in model means
+  left_join(df_prag_feature_means, by = c("condition", "feature")) %>%
+  left_join(df_lit_feature_means, by = c("condition", "feature")) %>%
+  left_join(df_base_feature_means, by = c("condition", "feature"))
+```
+
+
+## Behavioral analyses
+
+```{r lmer, eval=FALSE, opts.label="analysis"}
+# analyses presented in CogSci paper
+
+# linear mixed-effects model
+lmer_condition <-
+  lmer(prevalence ~ condition + (1|participant) + (1|feature),
+       data=s6_data_tidy)
+
+# main effect of condition?
+lmer_condition %>%
+  Anova()
+
+# pairwise comparisons, corrected since exploratory
+lmer_condition %>%
+  emmeans("condition") %>%
+  pairs(adjust = "bonferroni") %>%
+  summary()
+```
+
+
+```{r glm, opts.label="analysis"}
+# beta mixed-effects model
+glm_condition <-
+  glmmTMB(prevalence ~ condition + (1|participant) + (1|feature), 
+        data = s6_data_tidy, 
+        family = beta_family(link = "logit")) 
+
+# main effect of condition?
+glm_condition %>% 
+  Anova()
+
+# pairwise comparisons, corrected since exploratory
+glm_condition %>% 
+  emmeans("condition") %>% 
+  pairs(adjust = "FDR") %>% 
+  summary()
+```
+
+
+## Model comparison
+
+```{r model-means-vs-data}
+# base model vs data
+glm_base <- 
+  glmmTMB(prevalence ~ base_prevalence_mean + (1|participant), 
+          data = s6_data_tidy, 
+          family = beta_family(link = "logit"))
+
+# literal listener vs data
+glm_lit <- 
+  glmmTMB(prevalence ~ lit_prevalence_mean + (1|participant), 
+          data = s6_data_tidy, 
+          family = beta_family(link = "logit"))
+
+# pragmatic listener vs data
+glm_prag <- 
+  glmmTMB(prevalence ~ prag_prevalence_mean + (1|participant), 
+          data = s6_data_tidy, 
+          family = beta_family(link = "logit"))
+
+# model comparison: base vs lit
+# anova(glm_base, glm_lit)
+
+tibble(
+  model = c("base", "lit", "prag"),
+  log_lik = c(logLik(glm_base), logLik(glm_lit), logLik(glm_prag)),
+  AIC   = c(AIC(glm_base), AIC(glm_lit), AIC(glm_prag)),
+  BIC   = c(BIC(glm_base), BIC(glm_lit), BIC(glm_prag))
+)
+```
+
+
+
+
+
+
+
+
+
+# Power analyses off of Study 6 (Marianna)
+
+Bootstrapped power analyses off of study 6
+
+## Study 6 (preregistered) power analysis
+
+We can plan sample size for a pre-registered version of Study 6 by bootstrapping off of the existing Study 6 data to simulate what sample size is needed to achieve 90% power on the following effects:
+
+* main effect of condition in prevalence (in mixed effects beta regression with random intercepts per participant and per test feature)
+
+* follow-up comparison: generic vs baseline difference in prevalence
+
+* follow-up comparison: specific vs baseline difference in prevalence
+
+```{r eval=FALSE}
+# set the parameters
+conditions <- c("generic", "baseline", "specific")
+sample_size_per_cond <- c(100, 125, 150)
+simulations <- 300 # per sample size
+
+power <- crossing(
+  alpha = 0.05,
+  sample_size_per_cond = sample_size_per_cond, # test these sample sizes
+  simulation = rep(1:simulations, length(sample_size_per_cond)) # __ simulations per each sample size
+)
+
+# create a function to sample individual participants from pilot data and run analyses on the resample
+bootstrap_analysis <- function(sample_size_per_cond, alpha = 0.05, simulation = NULL){
+  
+  # for each condition conditions, resample participants in that condition to reach specified sample size
+  resampled_data <- purrr::map_dfr(conditions, function(cond) {
+    
+    # get list of original participants in condition
+    participants_in_cond <- s6_data_tidy %>%
+      filter(condition == cond) %>%
+      distinct(participant) %>% 
+      pull(participant)
+    
+    # construct list of participants to resample (with replacement, so might contain duplicates)
+    resample_participants_in_cond <- 
+      tibble(
+        observation_in_cond = c(1:sample_size_per_cond),
+        participant = sample(participants_in_cond,
+                             sample_size_per_cond,
+                             replace = TRUE)
+      ) 
+    
+    # return data for those participants
+    resample_participants_in_cond %>% 
+      left_join(s6_data_tidy, by = "participant")
+    
+  })
+  
+  # resampled_data <- resampled_data %>% 
+  #   # messy way to label each individual observation, even if resampled from same participant: use interaction of observation in condition and participant ID to assign a unique label to each observation across the whole dataset
+  #   mutate(observation = dplyr::dense_rank(interaction(observation_in_cond, participant))) 
+  
+  
+  
+  # run behavioral analyses
+  glmm_condition <- 
+    glmmTMB(prevalence ~ condition + (1|participant) + (1|feature),
+            data = resampled_data,
+            family = beta_family(link = "logit"))
+  
+  glmm_condition_aov <- glmm_condition %>% 
+    Anova()
+  
+  glmm_condition_pairs <- glmm_condition %>% 
+    emmeans("condition") %>% 
+    pairs(adjust = "none") %>% # no adj since prereg
+    summary()
+  
+  
+  
+  # # compare models vs data
+  # 
+  # # base model vs data
+  # glm_base <- 
+  #   glmmTMB(prevalence ~ base_prevalence_mean + (1|participant), 
+  #           data = resampled_data, 
+  #           family = beta_family(link = "logit"))
+  # 
+  # # literal listener vs data
+  # glm_lit <- 
+  #   glmmTMB(prevalence ~ lit_prevalence_mean + (1|participant), 
+  #           data = resampled_data, 
+  #           family = beta_family(link = "logit"))
+  # 
+  # # pragmatic listener vs data
+  # glm_prag <- 
+  #   glmmTMB(prevalence ~ prag_prevalence_mean + (1|participant), 
+  #           data = resampled_data, 
+  #           family = beta_family(link = "logit"))
+  # 
+  # 
+  # # run model comparisons
+  # model_comp <- tibble(
+  #   model = c("base", "lit", "prag"),
+  #   AIC   = c(AIC(glm_base), AIC(glm_lit), AIC(glm_prag)),
+  #   BIC   = c(BIC(glm_base), BIC(glm_lit), BIC(glm_prag))
+  # )
+  
+  
+  
+  # pull critical values to evaluate from each analysis
+  results <- tibble(
+    # main effect of condition
+    condition = glmm_condition_aov %>% 
+      pull(`Pr(>Chisq)`),
+    
+    # baseline vs generic
+    baseline_vs_generic = glmm_condition_pairs %>% 
+      filter(contrast == "baseline - generic") %>% 
+      pull(p.value),
+    
+    # baseline vs specific
+    baseline_vs_specific = glmm_condition_pairs %>% 
+      filter(contrast == "baseline - specific") %>% 
+      pull(p.value),
+    
+    
+    # # base vs lit AIC, who's lower
+    # base_vs_lit_aic = if_else(
+    #   model_comp %>% filter(model == "base") %>% pull(AIC) >
+    #     model_comp %>% filter(model == "lit") %>% pull(AIC),
+    #   "lit",
+    #   "base"),
+    # 
+    # # base vs lit BIC, who's lower
+    # base_vs_lit_bic = if_else(
+    #   model_comp %>% filter(model == "base") %>% pull(BIC) >
+    #     model_comp %>% filter(model == "lit") %>% pull(BIC),
+    #   "lit",
+    #   "base"),
+    # 
+    # # lit vs prag AIC, who's lower
+    # lit_vs_prag_aic = if_else(
+    #   model_comp %>% filter(model == "lit") %>% pull(AIC) >
+    #     model_comp %>% filter(model == "prag") %>% pull(AIC),
+    #   "prag",
+    #   "lit"),
+    # 
+    # # lit vs prag BIC, who's lower
+    # lit_vs_prag_bic = if_else(
+    #   model_comp %>% filter(model == "lit") %>% pull(BIC) >
+    #     model_comp %>% filter(model == "prag") %>% pull(BIC),
+    #   "prag",
+    #   "lit")
+    
+    
+    )
+  
+  return(results)
+}
+
+power_exp <- power %>% 
+  mutate(results = pmap(power, bootstrap_analysis)) %>% # run the function using the parameters we set up in the power table
+  unnest(cols = c(results))
+
+power_results <- power_exp %>% 
+  group_by(sample_size_per_cond) %>%
+  summarize(condition = sum(condition < .05) / n(),
+            baseline_vs_generic = sum(baseline_vs_generic < .05) / n(),
+            baseline_vs_specific = sum(baseline_vs_specific < .05) / n())
+            
+            # base_vs_lit_aic = sum(base_vs_lit_aic == "lit") / n(),
+            # base_vs_lit_bic = sum(base_vs_lit_bic == "lit") / n(),
+            # lit_vs_prag_aic = sum(lit_vs_prag_aic == "prag") / n(),
+            # lit_vs_prag_bic = sum(lit_vs_prag_bic == "prag") / n())
+
+write.csv(power_results, file = "study6_power_results.csv")
+
+power_results
+```
+
+## Study 8 power analysis
+
+```{r eval=FALSE}
+# set the parameters
+alpha <- 0.05
+simulations <- 300
+
+power <- crossing(
+  alpha = alpha,
+  sample_size = c(20, 25, 30, 40, 50), # test these sample sizes
+  simulation = rep(1:simulations, 5) # 1000 simulations per each of 5 tested sample sizes
+)
+
+# create a function to sample individual participants from pilot data and run analyses on the resample
+bootstrap_analysis <- function(sample_size, alpha = 0.05, simulation = NULL){
+  # resample sample_size number of participants from pilot data, with replacement
+  resample <- bind_rows(s6_ind_long %>% 
+                          filter(condition == "generic") %>% 
+                          slice_sample(n = sample_size, replace = TRUE),
+                        s6_ind_long %>% 
+                          filter(condition == "specific") %>% 
+                          slice_sample(n = sample_size, replace = TRUE)) %>% 
+    mutate(observation = row_number())
+  
+  # run analyses on each measure, pull p-values from each analysis
+  results <- tibble(
+    prevalence_main_effect = lmer(prevalence ~ condition + (1|question), 
+                                  data = resample) %>% 
+      Anova() %>%
+      pull(`Pr(>Chisq)`)
+    )
+  
+  return(results)
+}
+
+power_exp <- power %>% 
+  mutate(results = pmap(power, bootstrap_analysis)) %>% # run the function using the parameters we set up in the power table
+  unnest(cols = c(results))
+
+power_results <- power_exp %>% 
+  group_by(sample_size, contrast) %>%
+  summarize(prevalence_main_effect = sum(prevalence_main_effect < .05) / n())
+
+write.csv(power_results, file = "study8_power_results.csv")
+```

@@ -2,15 +2,22 @@
 .venv*
 
 # not public
+private/
+stimuli/
 .env
 *pilot*
-IRB/
+analyses/0_anonymize_data.R
 model/background
 model/model-alt
 model/__pycache__
-model/scratch/
+
+# admin
+IRB/
 receipts/
-stimuli/*
+
+# intermediate files
+model/scratch
+data/processed
 
 # tex intermediate files
 *.aux

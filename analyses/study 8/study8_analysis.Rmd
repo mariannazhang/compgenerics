@@ -1,0 +1,1596 @@
+---
+title: "Compgenerics study 8 (proportionality) study"
+author: Marianna Zhang
+date: 2025-03-10
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+# load libraries
+library(here)       # navigating directories
+
+library(janitor)    # cleaning data
+library(scales)     # percent conversion
+library(gt)         # table formatting
+
+library(tidyverse)  # data wrangling & visualization
+library(grid)       # custom plotting
+
+library(glmmTMB)    # beta mixed effects models
+library(car)        # anova type II-III
+library(emmeans)    # pairwise comparisons
+
+# don't show code or messages in knitted doc
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+
+# prevent scientific notation for numerals
+options(scipen = 999)
+
+# format p-values for reporting
+format_p <- function(p) { 
+  if (p < .001) {
+    return("< .001")
+  } else {
+    return(paste0("= ", round(p, digits = 3)))
+  }
+}
+```
+
+```{r vis-theme, include = FALSE}
+# set visualization theme
+theme_set(
+  ggthemes::theme_few() +
+    theme(text = element_text(size = 16), # large text size for presentation figures
+          axis.ticks.x = element_blank()) # remove x-axis ticks
+)
+```
+
+# Summary
+
+This exploratory version of study 8 (n=35/condition * 15 conditions = 450 participants) was an exploratory study to assess how count versus proportionality of generics vs specifics affect inductive potential. 
+
+Unlike the previous pilot, we find **an effect of proportion of generics to specifics** on adults' judgments of the prevalence of novel features of a social group. This effect is stronger than the effect of the **raw number of generics** heard, which is a significant predictor on its own, but not after being entered into the same model as proportion (see [Primary results]). 
+
+Notably, proportion continued to be a stronger predictor than raw number of generics, even after subsetting the study to extreme conditions, where proportion (0% or 100%) was a coarser predictor than number of generics (0, or 4/8/16) (see [Extreme conditions only]). 
+
+Nonetheless, the proportionality effect became marginal after controlling for which particular training features were seen (see [Training features]), and was no longer significant after subsetting the study to the mixed conditions, which are more naturalistic and where participants might be particularly sensitive to alternative utterances the speaker could make (see [Mixed conditions only]). 
+
+# Methods
+
+```{r data-import}
+# import Qualtrics data
+data_raw_headers <- 
+  read_csv(here("data", "study8.csv"), 
+           n_max = 2) 
+  
+data_raw <- 
+  read_csv(here("data", "study8.csv"),
+           col_names = data_raw_headers %>% names(),
+           skip = 3) 
+
+# import demographic data from Prolific
+data_dem_raw <-
+  read_csv(here("data", "study8_dem.csv"))
+```
+
+```{r data-cleaning}
+data_dem <- data_dem_raw %>% 
+  # clean column names
+  clean_names() 
+
+data_all <- data_raw %>% 
+  
+  # join with demographic data
+  left_join(data_dem, 
+            by = "hashed_id") %>% 
+  
+  # clean column names
+  rename_with(~str_remove(., '_1'),
+              .cols = cave_1:attn_check_1) %>% 
+  rename(test_features_order = InductionTask_DO) %>% 
+  
+  # join self-describe demographic columns
+  mutate(gender = coalesce(gender_4_TEXT, gender),
+         race = coalesce(race_15_TEXT, race)) %>% 
+  
+  # remove extraneous columns
+  select(-c(StartDate:pledge,
+            gender_4_TEXT, race_15_TEXT,
+            sound_check_DO, check_task_DO, FL_12_DO, # unnecessary display orders
+            issues:about,
+            submission_id:archived_at,
+            completion_code
+  )) %>% 
+  
+  # reorder columns
+  relocate(condition:test_features_order,
+           .before = cave) %>% 
+  
+  # add participant ID column
+  mutate(participant = row_number(),
+         .before = everything()) %>% 
+  
+  # fix baseline counts
+  mutate(num_generics = replace(num_generics, condition=="baseline", 0),
+         total_utt = replace(total_utt, condition=="baseline", 0)) %>% 
+  
+  # convert prevalence to 0-1, trim endpoints
+  mutate(across(cave:yellow, \(x) as.numeric(x)/100)) %>% 
+  mutate(across(cave:yellow, \(x) case_when(
+    x == 0 ~ 0.01,
+    x == 1 ~ 0.99,
+    TRUE ~ x))) %>%
+  
+  # fix column types, levels
+  mutate(across(c(num_generics, total_utt), as.numeric)) %>% 
+  
+  mutate(age = age %>% as.numeric(),
+         education = education %>% factor(
+           levels = c(
+             "Less than high school", 
+             "High school/GED", 
+             "Some college", 
+             "Bachelor's (B.A., B.S.)", 
+             "Master's (M.A., M.S.)", 
+             "Doctoral (Ph.D., J.D., M.D.)", 
+             "Prefer not to specify"))) %>% 
+  
+  # add prop generics, num specifics
+  mutate(num_specifics = total_utt - num_generics,
+         .before = total_utt) %>% 
+  mutate(prop_generics = num_generics/total_utt,
+         .after = total_utt) 
+
+
+# # unpack order into lists
+# mutate(across(ends_with("order")),
+#        str_split_1(., '\\|'))
+```
+
+
+## Participants
+
+```{r sample}
+# record total collected, failures on each check question
+sample <- data_all %>% 
+  summarize(n_collect = n(),
+            # sound_check = sum(sound_check != "bird" | is.na(sound_check)),
+            attn_check = sum(attn_check != 100 | is.na(attn_check)),
+            AI = sum(AI != "No" | is.na(AI)),
+            check_task = sum(check_task != "Answering questions about a fictional group of people"))
+
+# exclude participants
+data <- data_all %>%
+  filter(
+    # sound_check == "bird",
+    attn_check == 100,
+    AI == "No",
+    check_task == "Answering questions about a fictional group of people") %>% 
+  select(-c(sound_check, attn_check, AI, check_task))
+
+# record number of participants in actual sample after exclusions, exclusion rate
+sample <- sample %>% 
+  mutate(n = nrow(data),
+         n_excl = n_collect - n,
+         excl_rate = n_excl/n_collect)
+```
+
+Data was collected from `r sample$n_collect` adults (n=8-11/condition) via Prolific on Monday 3/10/2025. Participants required to be in the United States, fluent in English, and having not participated in prior studies under this protocol. Participants were paid $1.63 for an estimated 5-8 minute task. Participants were requested to particpate via desktop, after reported iOS issues on the last task. 
+
+```{r sample-condition}
+# Record number of participants in actual sample per condition
+sample_condition <- data %>% 
+  group_by(num_generics, total_utt) %>% 
+  summarize(n = length(unique(participant)))
+
+sample_condition %>% 
+  ungroup() %>% 
+  gt()
+```
+
+### Exclusion criteria
+
+We recruited 525 participants, of whom `r sample$n_excl` participants (`r label_percent(0.1) (sample$excl_rate)` of all participants) were excluded for meeting at least 1 of the following exclusion criteria:
+
+* failing the attention check (i.e., did not select 100% on slider when asked to during induction task) (n = `r sample$attn_check` participants)
+
+* admitting to use of AI after being explicitly informed use was prohibited (n = `r sample$AI` participants)
+
+* failing the task check (n = `r sample$check_task` participants)
+
+Participants who failed the sound check were included, since a few participants mentioned technical difficulties with the Qualtrics automatically progressing past that video. 
+
+### Demographics
+
+```{r dem-age}
+## Age
+dem_age <- data %>%
+  summarize(mean = mean(age),
+            sd = sd(age),
+            n = n())
+
+data %>% 
+  ggplot(aes(x = age)) +
+  geom_density() +
+  scale_x_continuous(limits = c(18, 100))
+
+dem_age %>%
+  gt() %>% 
+  tab_header("age") %>% 
+  fmt_number(
+    columns = mean:sd,
+    decimals = 2,
+    use_seps = FALSE
+  )
+```
+* The sample skewed young in age. 
+
+```{r dem-gender}
+## Gender
+dem_gender <- data %>%
+  count(gender, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_gender %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample reflected the diversity of the gender identities in the US.
+
+[(`r label_percent() (dem_gender %>% filter(gender == "Male") %>% pull(prop))` male, `r label_percent() (dem_gender %>% filter(gender == "Female") %>% pull(prop))` female, `r label_percent() (dem_gender %>% filter(gender == "Non-binary") %>% pull(prop))` non-binary, `r label_percent() (dem_gender %>% filter(gender == "Prefer not to specify") %>% pull(prop))` prefer not to specify)]: # 
+
+```{r dem-race}
+## Race
+dem_race <- data %>%
+  count(race, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_race_lumped <- data %>%
+  mutate(race_lumped = fct_lump_prop(race, 0.025)) %>%
+  count(race_lumped, sort = TRUE) %>% 
+  mutate(prop = n/sample$n)
+
+dem_race %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample was also racially diverse, with White Americans slightly overrepresented and Hispanic Americans undererepresented. 
+
+[`r label_percent() (dem_race %>% filter(race == "White, Caucasian, or European American") %>% pull(prop))` White, Caucasian or European American; `r label_percent() (dem_race %>% filter(race == "Black or African American") %>% pull(prop))` Black or African American, `r label_percent() (dem_race %>% filter(race == "Hispanic or Latino/a") %>% pull(prop))` Hispanic or Latino/a, `r label_percent() (dem_race %>% filter(race == "East Asian") %>% pull(prop))` East Asian, `r label_percent() (dem_race %>% filter(race == "South or Southeast Asian") %>% pull(prop))` South or Southeast Asian.]: #
+
+```{r dem-education}
+## Education
+dem_education <- data %>%
+  count(education) %>% 
+  mutate(prop = n/sample$n)
+
+dem_education %>% 
+  mutate(prop = label_percent(0.1) (prop)) %>% 
+  gt() 
+```
+
+* The sample was about evenly split on college completion. 
+
+## Procedure
+
+This study was administered as a [Qualtrics survey](https://nyu.qualtrics.com/survey-builder/SV_eCL8bIiwGScAj7o/edit), and approved by the NYU IRB (IRB-FY2023-6812).
+
+After providing their consent, participants completed a captcha, pledge not to use AI, and sound check. Participants then completed:
+
+1. **Training phase**: participants heard some number of generic statements and specific statements, based on condition. Which features were mentioned was randomized, as was statement order.
+
+2. **Test phase (induction task)**: participants completed an induction task where they imagined seeing a Zarpie with a novel feature, and estimated the prevalence of that feature among Zarpies using a slider from 0 to 100 (initialized at 0). All participants completed the same 16 trials, with order of trials randomized. 
+
+Participants then completed a few task completion questions, demographics, and were debriefed. 
+
+## Data processing
+
+Prevalence judgments were converted to a scale from 0 to 1, with 0 and 1 values trimmed to 0.01 and 0.99 to support a beta regression, since a uniform beta distribution does not include its endpoints of 0 and 1. 
+
+## Participant feedback
+
+The most frequent participant issue was audio issues (*n* = 4). One participant reported "The audio was horrible. It scared my cat.", another reported "you might want to equalize the volume between the videos and the questions" (I had noticed equalization issues but was unable to fix in HTML, will fix later in the video itself). 
+
+One person had trouble with the attention check ("I couldn't see where to move the slider for the attention check, so I just chose 50%"). 
+
+One person complained that they were unable to copy the consent form (this issue was a result of anti-AI study-wide CSS and will be changed to question-specific CSS in the future). 
+
+When asked to guess what the study was about, many participants reported that it was about judging other people by their characteristics. 
+
+# Primary results
+
+## Induction task
+
+### Plots {.tabset}
+
+```{r data-tidy}
+data_tidy <- data %>% 
+  # tidy data
+  pivot_longer(cols = cave:yellow,
+               names_to = "test_feature",
+               values_to = "prevalence") %>% 
+  # extract the order of test features (disregarding attention check)
+  mutate(test_feature_order = map2_int(test_feature, test_features_order,
+                                       function(feat, order){
+                                         order_split <- str_split_1(order, '\\|') %>% # split test_features_order by |
+                                           discard(\(x) x == "attn_check") # discard attention check
+                                         match(feat, order_split)[1] # get first matching index
+                                       })) %>% 
+  select(-test_features_order)
+
+data_tidy %>% 
+  write_csv(here("data/processed", "study8_tidy.csv"))
+```
+
+
+#### Summary
+
+```{r plot-induction-num}
+# summary plot of prevalence by condition (number of generics)
+data_tidy %>% 
+  
+  # convert num_generics to factor
+  mutate(num_generics = as.factor(num_generics)) %>%
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = total_utt,
+             color = num_generics)) + 
+  
+  # add confidence intervals + means
+  stat_summary(fun = mean,
+               geom = "line",
+               aes(group = num_generics),
+               position = position_dodge(width = 1),
+               size = 1) +
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = 1),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = 1),
+               size = 2) +
+  
+  # color palette
+  scale_color_viridis_d(name = "number \nof generics",
+                        end = .8,
+                        option = "magma") +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_x_continuous(name = "total utterances",
+                     breaks = c(0, 4, 8, 12, 16)) + # conditions
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  
+  # add title
+  ggtitle("Prevalence by number of generics") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_number.png")
+```
+
+```{r plot-induction-prop}
+# summary plot of prevalence by condition (prop generics)
+data_tidy %>% 
+  
+  mutate(prop_generics = case_when(is.na(prop_generics) ~ "baseline",
+                                   TRUE ~ as.character(round(prop_generics, 2))) %>% 
+           as.factor()) %>% 
+  
+  # make plot
+  ggplot(aes(y = prevalence,
+             x = total_utt,
+             color = prop_generics)) + 
+  
+  # add confidence intervals + means + lines connecting means
+  
+  stat_summary(fun = mean,
+               geom = "line",
+               aes(group = prop_generics),
+               position = position_dodge(width = 1),
+               size = 1) +
+  stat_summary(fun.data = mean_cl_boot,
+               geom = "linerange",
+               position = position_dodge(width = 1),
+               size = 1) +
+  stat_summary(fun = mean,
+               geom = "point",
+               position = position_dodge(width = 1),
+               size = 2) +
+  
+  # color palette
+  scale_color_viridis_d(name = "proportion\nof generics,\nvs specifics",
+                        end = .8,
+                        option = "magma") +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.caption = element_text(size = 8)) +
+  scale_x_continuous(name = "total utterances",
+                     breaks = c(0, 4, 8, 12, 16)) + # conditions
+  scale_y_continuous(name = "prevalence",
+                     limits = c(0, 1),
+                     breaks = c(0, .25, .5, .75, 1), # labelled points on slider
+                     labels = percent) +
+  
+  # add title
+  ggtitle("Prevalence by proportion of generics") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_by_prop.png")
+```
+
+#### Density
+
+```{r plot-induction-density}
+# density plot of prevalence by condition
+data_tidy %>% 
+  # reverse num_generics for plotting
+  mutate(num_generics = factor(num_generics,
+                               levels=sort(unique(data_tidy$num_generics),
+                                           decreasing = TRUE))) %>% 
+  # add condition highlight for Study 6 conditions
+  mutate(condition_highlight = case_when(condition %in% c("baseline", "0/16", "16/16") ~ "yes",
+                                         TRUE ~ "no")) %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             fill = prop_generics)) + 
+  facet_grid(num_generics ~ total_utt) +
+  
+  # add background highlight to specific facets
+  geom_rect(aes(xmin = -Inf, xmax = Inf,
+                ymin = -Inf, ymax = Inf,
+                alpha = condition_highlight),
+            fill = "lightyellow") +
+  scale_alpha_manual(values = c(0, 0.1)) +
+  
+  # add facet outline to specific facets (writes under facet outlines)
+  # geom_rect(aes(xmin = -Inf, xmax = Inf,
+  #               ymin = -Inf, ymax = Inf,
+  #               alpha = condition_highlight),
+  #           color = "yellow",
+  #           fill = NA,
+  #           inherit.aes = FALSE) + 
+  # scale_alpha_manual(values = c(0, 1)) + 
+  
+  # add density plots
+  geom_density(adjust = 1/2) + 
+  scale_fill_gradient(name = "proportion\n of generics,\n vs specifics\n",
+                      low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_tidy %>% distinct(condition, prop_generics, 
+                                          num_generics, total_utt),
+            aes(label = if_else(
+              condition == "baseline", "baseline",
+              glue::glue('{condition} generics'))),
+            x = .5, y = Inf, vjust = 1.5, size = 3) +
+  # annotate('text', x = 50, y = Inf,  vjust = 1.5, size = 3,
+  #          label = unique(data_tidy$condition)) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "number of generics",
+                     breaks = NULL,
+                     expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), 
+                     minor_breaks = c(.25, .5, .75), # labelled points on slider
+                     expand = c(0,0),
+                     labels = percent) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by condition") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_density_by_condition.png")
+
+# add facet outline to specific facets (does not work)
+# g <- ggplotGrob(p)
+# str(g$grobs[[6]])
+# g$grobs[[6]]$children[[1]]$children[[1]]$gp$col <- "yellow"
+# grid.draw(g)
+```
+
+#### Histogram
+
+```{r plot-induction-hist}
+# histogram of prevalence by condition
+data_tidy %>% 
+  # reverse num_generics for plotting
+  mutate(num_generics = factor(num_generics,
+                               levels=sort(unique(data_tidy$num_generics),
+                                           decreasing = TRUE))) %>% 
+  # add condition highlight for Study 6 conditions
+  mutate(condition_highlight = case_when(condition %in% c("baseline", "0/16", "16/16") ~ "yes",
+                                         TRUE ~ "no")) %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             fill = prop_generics)) + 
+  facet_grid(num_generics ~ total_utt) +
+  
+  # add background highlight to specific facets
+  geom_rect(aes(xmin = -Inf, xmax = Inf,
+                ymin = -Inf, ymax = Inf,
+                alpha = condition_highlight),
+            fill = "lightyellow") +
+  scale_alpha_manual(values = c(0, 0.1)) +
+  
+  # add hist
+  geom_histogram(binwidth = .1) + 
+  scale_fill_gradient(name = "proportion\n of generics,\n vs specifics\n",
+                      low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_tidy %>% distinct(condition, prop_generics, 
+                                          num_generics, total_utt),
+            aes(label = if_else(
+              condition == "baseline", "baseline",
+              glue::glue('{condition} generics'))),
+            x = .5, y = Inf, vjust = 1.5, size = 3) +
+  # annotate('text', x = 50, y = Inf,  vjust = 1.5, size = 3,
+  #          label = unique(data_tidy$condition)) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "number of generics",
+                     breaks = NULL,
+                     expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), 
+                     minor_breaks = c(.25, .5, .75), # labelled points on slider
+                     expand = c(0,0),
+                     labels = percent) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by condition") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_hist_by_condition.png")
+```
+
+#### Cumulative
+```{r plot-induction-cum}
+# cumulative prevalence by condition
+data_tidy %>% 
+  # reverse num_generics for plotting
+  mutate(num_generics = factor(num_generics,
+                               levels=sort(unique(data_tidy$num_generics),
+                                           decreasing = TRUE))) %>% 
+  # add condition highlight for Study 6 conditions
+  mutate(condition_highlight = case_when(condition %in% c("baseline", "0/16", "16/16") ~ "yes",
+                                         TRUE ~ "no")) %>% 
+  
+  # add cumulative counts
+  arrange(num_generics, total_utt, prevalence) %>% 
+  group_by(num_generics, total_utt) %>% 
+  mutate(prevalence_cum_pct = row_number()/n()) %>% 
+  # mutate(cum_prevalence = cumsum(prevalence)) %>% 
+  ungroup() %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             y = prevalence_cum_pct,
+             color = prop_generics)) + 
+  facet_grid(num_generics ~ total_utt) +
+  
+  # add background highlight to specific facets
+  geom_rect(aes(xmin = -Inf, xmax = Inf,
+                ymin = -Inf, ymax = Inf,
+                alpha = condition_highlight),
+            fill = "lightyellow") +
+  scale_alpha_manual(values = c(0, 0.1)) +
+  
+  # draw cumulative distribution
+  geom_line() + 
+  
+  scale_color_gradient(name = "proportion\n of generics,\n vs specifics\n",
+                       low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_tidy %>% distinct(condition, prop_generics, 
+                                          num_generics, total_utt),
+            aes(label = if_else(
+              condition == "baseline", "baseline",
+              glue::glue('{condition} generics'))),
+            x = .5, y = Inf, vjust = 1.5, size = 3) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "number of generics",
+                     breaks = NULL,
+                     expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), minor_breaks = c(.25, .5, .75), expand = c(0,0),
+                     labels = label_percent()) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by condition") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_cum_by_condition.png")
+```
+
+```{r plot-induction-cum-prop}
+# plot prevalence (cumulative) by prop generics
+data_tidy %>% 
+  # reverse num_generics for plotting
+  mutate(num_generics = factor(num_generics,
+                               levels=sort(unique(data_tidy$num_generics),
+                                           decreasing = TRUE))) %>% 
+  
+  # add cumulative counts
+  arrange(num_generics, total_utt, prevalence) %>% 
+  group_by(num_generics, total_utt) %>% 
+  mutate(prevalence_cum_pct = row_number()/n()) %>% 
+  # mutate(cum_prevalence = cumsum(prevalence)) %>% 
+  ungroup() %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             y = prevalence_cum_pct,
+             color = num_generics)) + 
+  facet_wrap(vars(prop_generics), 
+             nrow = n_distinct(data_tidy$prop_generics)) +
+  
+  # draw cumulative distribution
+  geom_line(aes(group = condition)) + 
+  
+  # scale_color_gradient(name = "proportion\n of generics,\n vs specifics\n",
+  #                      low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_tidy %>% 
+              distinct(condition, prop_generics, num_generics, total_utt) %>% 
+              group_by(prop_generics) %>% 
+              summarize(facet_label = paste(condition, collapse = ', ')),
+            aes(label = facet_label),
+            x = .5, y = Inf, vjust = 1.5, size = 3, inherit.aes = F) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "proportion of generics to specifics",
+                     breaks = NULL,
+                     expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), minor_breaks = c(.25, .5, .75), expand = c(0,0),
+                     labels = label_percent()) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by proportion of generics to specifics") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_cum_by_prop.png",
+       height = 7,
+       width = 3)
+```
+
+```{r plot-induction-cum-count}
+# plot prevalence (cumulative) by number of generics
+data_tidy %>% 
+  # reverse num_generics for plotting
+  mutate(num_generics = factor(num_generics,
+                               levels=sort(unique(data_tidy$num_generics),
+                                           decreasing = TRUE))) %>% 
+  
+  # add cumulative counts
+  arrange(num_generics, total_utt, prevalence) %>% 
+  group_by(num_generics, total_utt) %>% 
+  mutate(prevalence_cum_pct = row_number()/n()) %>% 
+  # mutate(cum_prevalence = cumsum(prevalence)) %>% 
+  ungroup() %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             y = prevalence_cum_pct,
+             color = prop_generics)) + 
+  facet_wrap(vars(num_generics), 
+             nrow = n_distinct(data_tidy$num_generics)) +
+  
+  # draw cumulative distribution
+  geom_line(aes(group = condition)) + 
+  
+  scale_color_gradient(name = "proportion\n of generics,\n vs specifics\n",
+                       low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_tidy %>% 
+              distinct(condition, prop_generics, num_generics, total_utt) %>% 
+              group_by(num_generics) %>% 
+              summarize(facet_label = paste(condition, collapse = ', ')),
+            aes(label = facet_label),
+            x = .5, y = Inf, vjust = 1.5, size = 3, inherit.aes = F) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(name = "number of generics",
+                     breaks = NULL,
+                     expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), minor_breaks = c(.25, .5, .75), expand = c(0,0),
+                     labels = percent) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by number of generics") +
+  labs(caption = "baseline, 0/16, 16/16 = replication of Study 6
+       collapsing across 16 test features")
+
+ggsave(path = "figs",
+       filename = "prevalence_cum_by_count.png",
+       height = 10,
+       width = 3.5)
+```
+
+
+### Analyses
+
+The following beta regressions predict prevalence with random intercepts per participant and per test feature. 
+
+* There is a main effect of **condition** ($\chi$(14)=43.69, *p*<.001) on the inferred prevalence of novel features. 
+
+* On their own as lone predictors, **raw number of generics** (*z* = 5.34, *p* < .001), the **raw number of specifics** (*z* = -4.25, *p* < .001), and the **proportion of generics to specifics** (*z* = 5.68, *p* < .001) each predicted the inferred prevalence of novel features.
+
+* When entered into the same model, **proportion of generics to specifics** predicted prevalence judgments (*z* = 2.36, *p* = .018), while **raw number of generics** did not (*z* = 0.99, *p* = .32). (This is the reverse of the pattern from the pilot.)
+
+* When entered into the same model, **raw number of generics** predicted prevalence judgments (*z* = 3.69, *p* < .001), while raw number of specifics was marginal (*z* = -1.86, *p* = .063).
+
+```{r analysis-initial, echo = TRUE, include = TRUE}
+# condition
+glmmTMB(prevalence ~ condition + (1|participant) + (1|test_feature), 
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  Anova()
+```
+
+```{r analysis-simple, echo = TRUE, include = TRUE}
+# raw number of generics
+glmmTMB(prevalence ~ num_generics + (1|participant) + (1|test_feature),
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# raw number of specifics
+glmmTMB(prevalence ~ num_specifics + (1|participant) + (1|test_feature),
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# proportion of generics
+glmmTMB(prevalence ~ prop_generics + (1|participant) + (1|test_feature),
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+```{r analysis-num-vs-prop-generics, echo = TRUE, include = TRUE}
+# raw number vs proportion of generics
+glmmTMB(prevalence ~ num_generics + prop_generics + (1|participant) + (1|test_feature),
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+
+```{r analysis-generics-vs-specifics, echo = TRUE, include = TRUE}
+# raw number of generics vs raw number of specifics
+glmmTMB(prevalence ~ num_generics + num_specifics + (1|participant) + (1|test_feature),
+        data = data_tidy, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+
+# Secondary results
+
+
+## Straight-lining
+
+```{r straightlining}
+# exact straightlining (50)
+straightline_50_participants <-
+  data_tidy %>% 
+  group_by(participant) %>%
+  filter(all(prevalence == 0.50)) %>% 
+  distinct(participant)
+
+# approximate straightlining (48-52)
+straightline_approx_participants <-
+  data_tidy %>% 
+  group_by(participant) %>%
+  filter(all(prevalence %in% seq(0.48, 0.52, 0.01))) %>% 
+  distinct(participant)
+```
+
+Induction task plots suggest a lot of anchoring around the 50\% marker, and debriefing suggests many participants thought it was a strange task since the test features were odd/bizarre. Are these just from participants who were straightlining through all the test items? 
+
+* `r straightline_50_participants %>% nrow()` out of `r sample$n` included participants (`r label_percent(0.01)(nrow(straightline_50_participants)/sample$n)`) answered 50\% to all test questions. 
+
+* `r straightline_approx_participants %>% nrow()` out of `r sample$n` included participants (`r label_percent(0.01)(nrow(straightline_approx_participants)/sample$n)`) answered 48-52% to all test questions, a looser criterion.
+
+Since there were only a few participants who consistently straightlined, these participants were not excluded from analyses. 
+
+
+## Pairwise condition comparisons
+
+```{r ks-test-num}
+# get all conditions
+condition_names <- data_tidy %>% 
+  arrange(num_generics, total_utt) %>%
+  pull(condition) %>% 
+  unique()
+
+# construct all pairs of conditions
+condition_pairs <- 
+  combn(condition_names, 2) %>% 
+  t() %>% # transpose
+  as.tibble() %>% 
+  rename(condition_1 = `V1`,
+         condition_2 = `V2`)
+
+# define function to run ks test and return test results
+get_ks_results <- function(condition_a, condition_b){
+  # run ks test on cumulative percents from each condition
+  ks_test <- ks.test(data_tidy %>%
+                       filter(condition == condition_a) %>%
+                       pull(prevalence),
+                     data_tidy %>%
+                       filter(condition == condition_b) %>%
+                       pull(prevalence))
+  
+  # store results
+  ks_results <- tibble(
+    condition_1 = condition_a,
+    condition_2 = condition_b,
+    D = ks_test$statistic,
+    p.value = ks_test$p.value,
+    p.value.exact = ks_test$exact
+  )
+  
+  return(ks_results)
+}
+
+# run the function using the condition pairs
+condition_pairs_results <- tibble(
+  ks_results = map2(condition_pairs$condition_1, condition_pairs$condition_2, 
+                    get_ks_results)) %>%
+  unnest(cols = c(ks_results)) %>% 
+  
+  # add p-value sig column
+  mutate(p.value_sig = (p.value < .05),
+         p.value_corr = (p.value * nrow(.)),
+         p.value_sig_corr = (p.value_corr < .05)) %>% 
+  
+  # join additional condition columns for condition_1
+  left_join(
+    data_tidy %>% 
+      distinct(condition, num_generics, prop_generics) %>%
+      rename(
+        condition_1 = condition,
+        condition_1_num_generics = num_generics,
+        condition_1_prop_generics = prop_generics,
+      ),
+    by = "condition_1"
+  ) %>%
+  
+  # join additional condition columns for condition_1
+  left_join(
+    data_tidy %>% 
+      distinct(condition, num_generics, prop_generics) %>%
+      rename(
+        condition_2 = condition,
+        condition_2_num_generics = num_generics,
+        condition_2_prop_generics = prop_generics
+      ),
+    by = "condition_2"
+  ) %>% 
+  
+  # add match columns
+  mutate(same_num_generics = (condition_1_num_generics == condition_2_num_generics),
+         same_prop_generics = (condition_1_prop_generics == condition_2_prop_generics)) %>%
+  
+  # reorder columns
+  relocate(starts_with("condition_1"), starts_with("condition_2"), starts_with("same"), everything())
+```
+
+```{r ks-test-prop}
+# get all conditions
+condition_names_prop <- data_tidy %>% 
+  arrange(prop_generics, num_generics, total_utt) %>%
+  pull(condition) %>% 
+  unique()
+
+condition_names_prop <- c(
+  condition_names_prop[length(condition_names_prop)],
+  condition_names_prop[-length(condition_names_prop)]) # move baseline first
+
+
+# construct all pairs of conditions
+condition_pairs_prop <- 
+  combn(condition_names_prop, 2) %>% 
+  t() %>% # transpose
+  as.tibble() %>% 
+  rename(condition_1 = `V1`,
+         condition_2 = `V2`)
+
+# define function to run ks test and return test results
+get_ks_results <- function(condition_a, condition_b){
+  # run ks test on cumulative percents from each condition
+  ks_test <- ks.test(data_tidy %>%
+                       filter(condition == condition_a) %>%
+                       pull(prevalence),
+                     data_tidy %>%
+                       filter(condition == condition_b) %>%
+                       pull(prevalence))
+  
+  # store results
+  ks_results <- tibble(
+    condition_1 = condition_a,
+    condition_2 = condition_b,
+    D = ks_test$statistic,
+    p.value = ks_test$p.value,
+    p.value.exact = ks_test$exact
+  )
+  
+  return(ks_results)
+}
+
+# run the function using the condition pairs
+condition_pairs_prop_results <- tibble(
+  ks_results = map2(condition_pairs_prop$condition_1, condition_pairs_prop$condition_2, 
+                    get_ks_results)) %>%
+  unnest(cols = c(ks_results)) %>% 
+  
+  # add p-value sig column
+  mutate(p.value_sig = (p.value < .05),
+         p.value_corr = (p.value * nrow(.)),
+         p.value_sig_corr = (p.value_corr < .05)) %>% 
+  
+  # join additional condition columns for condition_1
+  left_join(
+    data_tidy %>% 
+      distinct(condition, num_generics, prop_generics) %>%
+      rename(
+        condition_1 = condition,
+        condition_1_num_generics = num_generics,
+        condition_1_prop_generics = prop_generics,
+      ),
+    by = "condition_1"
+  ) %>%
+  
+  # join additional condition columns for condition_1
+  left_join(
+    data_tidy %>% 
+      distinct(condition, num_generics, prop_generics) %>%
+      rename(
+        condition_2 = condition,
+        condition_2_num_generics = num_generics,
+        condition_2_prop_generics = prop_generics
+      ),
+    by = "condition_2"
+  ) %>% 
+  
+  # add match columns
+  mutate(same_num_generics = (condition_1_num_generics == condition_2_num_generics),
+         same_prop_generics = (condition_1_prop_generics == condition_2_prop_generics)) %>%
+  
+  # reorder columns
+  relocate(starts_with("condition_1"), starts_with("condition_2"), starts_with("same"), everything())
+```
+
+We can make **pairwise comparisons between conditions** using two-sample Kolmogorov–Smirnov tests, with Bonferroni correction for number of tests run (`r nrow(condition_pairs_results)`). The Kolmogorov–Smirnov test compares the cumulative distributions of two samples and returns a statistic *D* that reflects the maximum difference between the two distributions, as well as a *p*-value for the test.
+
+```{r ks-test-plot-num}
+# group same number of generics
+group_boundaries <- data.frame(
+  xmin = c(0.5, 4.5, 8.5, 11.5),  # start of each group
+  xmax = c(4.5, 8.5, 11.5, 13.5), # end of each group
+  ymin = c(0.5, 5.5, 9.5, 12.5),  # start of each group
+  ymax = c(5.5, 9.5, 12.5, 14.5)  # end of each group
+)
+
+# plotting confusion matrix-style plot for K-S test
+condition_pairs_results %>% 
+  mutate(across(c(condition_1, condition_2), 
+                ~ factor(.x, levels = condition_names))) %>%
+  ggplot(aes(x = condition_2, y = condition_1, 
+             fill = D)) +
+  geom_tile(linewidth = 1.01) +
+  # add border for groups of tiles w same num_generic
+  geom_rect(data = group_boundaries,
+            aes(xmin = xmin, xmax = xmax,
+                ymin = ymin, ymax = ymax),
+            fill = NA,
+            color = "black",
+            linewidth = 1,
+            inherit.aes = FALSE) +
+  
+  # label D and p-value
+  scale_fill_viridis_c(name = "D",
+                       limits = c(0, .32)) +
+  geom_text(aes(label = case_when(p.value_corr < .001 ~ "***",
+                                  p.value_corr < .01 ~ "**",
+                                  p.value_corr < .05 ~ "*",
+                                  TRUE ~ ""))) + 
+  # custom axes
+  scale_x_discrete(name = "condition") + 
+  scale_y_discrete(name = "condition") +
+  ggtitle("Pairwise comparisons between conditions",
+          "ordered by number of generics") +
+  labs(caption = "Kolmogorov–Smirnov tests w/ Bonferroni correction\nD = maximum percentage distance between cumulative curves \n* = p-value") 
+
+ggsave("condition_pairs_num.png")
+```
+
+```{r ks-test-plot-prop}
+# group same prop generics
+group_boundaries <- data.frame(
+  xmin = c(0.5, 6.5, 10.5),  # start of each group
+  xmax = c(4.5, 8.5, 14.5), # end of each group
+  ymin = c(1.5, 7.5, 11.5),  # start of each group
+  ymax = c(5.5, 9.5, 14.5)  # end of each group
+)
+
+# plotting confusion matrix-style plot for K-S test
+condition_pairs_prop_results %>% 
+  mutate(across(c(condition_1, condition_2), 
+                ~ factor(.x, levels = condition_names_prop))) %>%
+  ggplot(aes(x = condition_2, y = condition_1, 
+             fill = D)) +
+  geom_tile(linewidth = 1.01) +
+  # add border for groups of tiles w same num_generic
+  geom_rect(data = group_boundaries,
+            aes(xmin = xmin, xmax = xmax,
+                ymin = ymin, ymax = ymax),
+            fill = NA,
+            color = "black",
+            linewidth = 1,
+            inherit.aes = FALSE) +
+  
+  # label D and p-value
+  scale_fill_viridis_c(name = "D",
+                       limits = c(0, .32)) +
+  geom_text(aes(label = case_when(p.value_corr < .001 ~ "***",
+                                  p.value_corr < .01 ~ "**",
+                                  p.value_corr < .05 ~ "*",
+                                  TRUE ~ ""))) + 
+  # custom axes
+  scale_x_discrete(name = "condition") + 
+  scale_y_discrete(name = "condition") +
+  ggtitle("Pairwise comparisons between conditions",
+          "ordered by proportion of generics to specifics") +
+  labs(caption = "Kolmogorov–Smirnov tests w/ Bonferroni correction\nD = maximum percentage distance between cumulative curves \n* = p-value") 
+
+ggsave("condition_pairs_prop.png")
+```
+
+One quick and dirty way to think about these results is to look at how often pairs of conditions with the *same* (boxed) versus *different* (not in box) number of generics are significantly different from each other, and to do the same for pairs of conditions with *same* (boxed) versus *different* (not in box) proportions of generics. 
+
+Note, there are way way more pairwise comparisons comparing *different* numbers or proportions of generics than *same* numbers or proportion of generics, so this is a bit of a lopsided comparison. 
+
+If say number of generics matters, we would expect to see that the distribution of prevalence ratings rarely differ when comparing pairs that are the *same* number of generics, and differ much more when comparing pairs that are *different* number of generics.
+
+If say proportion of generics matters, we would expect to see that the distribution of prevalence ratings rarely differ when comparing pairs that are the *same* proportion of generics, and differ much more when comparing pairs that are *different* proportion of generics.
+
+```{r ks-test-summary}
+# how often is the test significantly different (after correction) pairs with same vs diff number of generics
+condition_pairs_results %>% 
+  group_by(same_num_generics) %>% 
+  summarize(sig_corr_tests = sum(p.value_sig_corr),
+            total_tests = n(),
+            prop_sig_corr = sig_corr_tests/total_tests) %>% 
+  
+  # pretty table
+  gt() %>% 
+  fmt_percent(columns = prop_sig_corr,
+              decimals = 1)
+
+# how often is the test significantly different (after correction) pairs with same vs diff prop of generics
+condition_pairs_results %>% 
+  group_by(same_prop_generics) %>% 
+  summarize(sig_corr_tests = sum(p.value_sig_corr),
+            total_tests = n(),
+            prop_sig_corr = sig_corr_tests/total_tests) %>% 
+  
+  # pretty table
+  gt() %>% 
+  fmt_percent(columns = prop_sig_corr,
+              decimals = 1)
+```
+
+
+## Study 6 conditions (replication)
+
+Three of the conditions (baseline, 0/16, 16/16) in this study (*n* = 32-35/condition) are replications of the conditions (baseline, specific, generic conditions) in Study 6 (*n* = 90-99/condition). In Study 6, prevalence was rated higher in the generic condition than the baseline condition than the specific condition, respectively. 
+
+```{r data-study-6}
+# filter to baseline, 0/16, 16/16
+data_study_6 <- data_tidy %>% 
+  filter(condition %in% c("baseline", "0/16", "16/16")) %>% 
+  # order condition for plotting
+  mutate(condition = condition %>% 
+           factor(levels = c("16/16", "baseline", "0/16")))
+
+data_study_6 %>% 
+  group_by(condition) %>% 
+  summarize(count = n_distinct(participant)) %>% 
+  arrange(desc(condition))
+```
+
+```{r plot-study-6}
+# plot data
+data_study_6 %>% 
+  
+  # make plot
+  ggplot(aes(x = prevalence,
+             fill = prop_generics)) + 
+  facet_wrap(vars(condition)) +
+  
+  # add density plots
+  # geom_density(adjust = 1/2) + 
+  geom_histogram(binwidth = .1) + 
+  scale_fill_gradient(name = "proportion\n of generics,\n vs specifics\n",
+                      low = "#1f77b4", high = "#ff7f0e") +
+  
+  # remove default facet row/column strip labels...
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+  ) +
+  # ...in favor of in-facet labels
+  geom_text(data = data_study_6 %>% distinct(condition, prop_generics),
+            aes(label = if_else(
+              condition == "baseline", "baseline",
+              glue::glue('{condition} generics'))),
+            x = .5, y = Inf, vjust = 1.5, size = 3) +
+  
+  # customize axes
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10),
+        axis.minor.ticks.x.bottom = element_line(size = .5), 
+        axis.text.x = element_text(size = 8, hjust = c(0, 1), vjust = .8),
+        plot.caption = element_text(size = 8)) +
+  scale_y_continuous(expand = c(0, 0, 0.3, 0)) +
+  scale_x_continuous(breaks = c(0, 1), minor_breaks = c(.5), expand = c(0,0),
+                     labels = label_percent()) +
+  guides(
+    x = guide_axis(minor.ticks = TRUE),
+    alpha = "none"
+  ) +
+  
+  # add title
+  ggtitle("Prevalence by condition",
+          "Study 6 replication conditions only") +
+  labs(caption = "collapsing across 16 test features")
+```
+
+After subsetting to the Study 6 conditions, we do replicate the main effect of condition ($\chi$(2) = 12.61, *p* = .0018). The 16/16 condition reported marginally higher prevalence judgments compared to baseline (*z* = 2.19, *p* = .085), and significantly higher compared to 0/16 condition (*z* = 3.51, *p* = .0013). 
+
+Unlike in Study 6, the baseline and 0/16 conditions were not statistically different from each other (*z* = 1.33, *p* = .56). 
+
+```{r analysis-study-6, echo=TRUE, include=TRUE}
+# same analysis as study 6
+model <- 
+  glmmTMB(prevalence ~ condition + (1|participant) + (1|test_feature),
+          data = data_study_6, 
+          family = beta_family(link = "logit")) 
+
+model %>% 
+  Anova()
+
+model %>% 
+  emmeans("condition") %>% 
+  pairs(adjust = "bonferroni") %>% 
+  summary()
+```
+
+## Extreme conditions only
+
+Subsetting to the extreme conditions where the proportion of generics was 0% or 100% (0/4, 0/8, 0/12, 0/16, 4/4, 8/8, 12/12, 16/16).
+
+```{r data-extreme-only}
+# filter out 0% and 100% generic
+data_extreme_only <- data_tidy %>% 
+  filter(prop_generics == 0 | prop_generics == 1)
+
+data_extreme_only %>% 
+  group_by(condition) %>% 
+  summarize(count = n_distinct(participant)) %>% 
+  arrange(desc(condition))
+```
+
+When each entered on their own as lone predictors, the raw number of generics (*z* = 5.33, *p* < .001), raw number of specifics (*z* = -5.13, *p* < .001), and the proportion of generics to specifics (*z* = 5.71, *p* < .001) were each significant in predicting prevalence judgments. 
+
+When pitted against each other in the same model, the **proportion of generics** to specifics remains a significant predictor of prevalence judgments (*z* = 2.21, *p* = .027), while the **raw number of generics** does not (*z* = 1.00, *p* = .32).
+
+```{r analysis-extreme-only-simple, echo = TRUE, include = TRUE}
+# raw number of generics
+glmmTMB(prevalence ~ num_generics + (1|participant) + (1|test_feature),
+        data = data_extreme_only, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# raw number of specifics
+glmmTMB(prevalence ~ num_specifics + (1|participant) + (1|test_feature),
+        data = data_extreme_only, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# proportion of generics
+glmmTMB(prevalence ~ prop_generics + (1|participant) + (1|test_feature),
+        data = data_extreme_only, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+```{r analysis-extreme-num-vs-prop-generics, echo = TRUE, include = TRUE}
+# raw number vs proportion of generics
+glmmTMB(prevalence ~ num_generics + prop_generics + (1|participant) + (1|test_feature),
+        data = data_extreme_only, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+## Mixed conditions only
+
+Mixed conditions (4/8, 4/12, 4/16, 8/12, 8/16, 12/16) have heightened contrast between generic and specific statements, since participants see both types of statements. 
+
+```{r data-mixed-only}
+# filter out 0% and 100% generic
+data_mixed_only <- data_tidy %>% 
+  filter(prop_generics != 0 & prop_generics != 1)
+
+data_mixed_only %>% 
+  group_by(condition) %>% 
+  summarize(count = n_distinct(participant)) %>% 
+  arrange(desc(condition))
+```
+
+After subsetting the sample to just mixed conditions (n = `r length(unique(data_mixed_only$participant))` total), neither raw numbers of generics, raw numbers of specifics, nor the proportion of generics to specifics were statistically significant in predicting prevalence judgments on their own (*p*s > .31). 
+
+```{r analysis-mixed-only-simple, echo = TRUE, include = TRUE}
+# raw number of generics
+glmmTMB(prevalence ~ num_generics + (1|participant) + (1|test_feature),
+        data = data_mixed_only, 
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# raw number of specifics
+glmmTMB(prevalence ~ num_specifics + (1|participant) + (1|test_feature),
+        data = data_mixed_only,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# proportion of generics
+glmmTMB(prevalence ~ prop_generics + (1|participant) + (1|test_feature),
+        data = data_mixed_only,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+```{r analysis-mixed-only-num-vs-prop-generics, echo = TRUE, include = TRUE}
+# raw number vs proportion of generics
+glmmTMB(prevalence ~ num_generics * prop_generics + (1|participant) + (1|test_feature),
+        data = data_mixed_only,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+```{r analysis-mixed-only-generics-vs-specifics, echo = TRUE, include = TRUE}
+# raw number of generics vs raw number of specifics
+glmmTMB(prevalence ~ num_generics + num_specifics + (1|participant) + (1|test_feature),
+        data = data_mixed_only,
+        family = beta_family(link = "logit")) %>%  
+  summary()
+```
+
+## Training features
+
+Participants saw some subset of 16 training features - anywhere from 0 to 16 of the full list of 16 - with subsets randomly selected. 
+
+Theoretically, the particular training features received might have an effect on prevalence judgments. Of note, the conditions with fewer total training utterances contain significant variability in which training features were seen, while the conditions with more total training utterances have less variability (with all participants in any of the 16 utterance conditions all seeing the same features). 
+
+Random effects to account for:
+* different test features may have different prevalences --> random intercepts per test feature
+* different participants may rate prevalence differently --> random intercepts per participant
+* total number of utterances heard may correlate with variability between participants in prevalence ratings, since conditions with fewer total utterances provided different training features more variability between-participants in the training --> random slopes of __ per total number of utterances
+* different training features may increase or decrease the overall prevalence
+
+Are the effects above robust after accounting for additional variance in the training structure?
+
+```{r dummy-coding}
+# dummy code whether each training feature was mentioned
+data_tidy_dummy <- data_tidy %>%
+  # create new column for manipulating
+  mutate(training_feature = training_features_order) %>%
+  # separate training features into long format
+  separate_longer_delim(training_feature, "|") %>%
+  
+  # mark all these training features as present
+  mutate(training_feature_present = TRUE) %>%
+  
+  # fill in missing training features as not present
+  complete(nesting(!!!syms(setdiff(names(.), c("training_feature",
+                                               "training_feature_present")))),
+           training_feature,
+           fill = list(training_feature_present = FALSE)) %>% 
+  
+  # remove NA as training feature values
+  filter(!is.na(training_feature)) %>%
+  
+  # pivot wide to get dummy columns
+  pivot_wider(names_from = training_feature, 
+              names_prefix = "trained_",
+              values_from = training_feature_present) %>% 
+  
+  unnest(starts_with("trained_")) 
+
+# get training dummy variables
+trained_variables <- data_tidy_dummy %>% 
+  select(starts_with("trained_")) %>% 
+  colnames()
+```
+
+The proportion of generics to specifics was marginal in predicting prevalence judgments (*z* = 1.88, *p* = .061), while the number of generics was not significant (*z* = 0.94, *p* = .35) in a beta regression with random slopes for the total utterances heard, in addition to random intercepts per participant and test feature.
+
+```{r analysis-total-utt}
+# num vs prop generic, w random effects for the presence of any particular training feature
+glmmTMB(prevalence ~ num_generics + prop_generics + (num_generics|total_utt) + (prop_generics|total_utt) + (1|participant) + (1|test_feature),
+        data = data_tidy_dummy,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+
+With 16 random intercepts for whether each of the training features was seen or not, the proportion of generics to specifics is marginal in predicting prevalence judgments (*z* = 1.81, *p* = .0070) and the raw number of generics is not significant (*z* = 1.19, *p* = .23).
+
+```{r analysis-training-features-random}
+# num vs prop generic, w random effects for the presence of any particular training feature
+formula_str <- paste("prevalence ~ num_generics + prop_generics + ",
+                     "(1 + num_generics + prop_generics || participant) + ",
+                     "(1 + num_generics + prop_generics || test_feature) + ",
+                     paste0("(1|", trained_variables, ")", collapse = " + "))
+formula <- as.formula(formula_str)
+
+glmmTMB(formula,
+        data = data_tidy_dummy,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+Did any particular training features predict prevalence judgments? No (*p*s > .19). 
+
+```{r analysis-training-features-main}
+# does presence of any particular training feature matter?
+formula_str <- paste("prevalence ~", paste(trained_variables, collapse = " + "), "+ (1|participant) + (1|test_feature)")
+formula <- as.formula(formula_str)
+
+glmmTMB(formula,
+        data = data_tidy_dummy,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+
+# get list of test features
+data_tidy %>% 
+  distinct(test_feature)
+```
+
+Additional possible analyses to do: 
+
+* Within a condition, find mean prevalence difference for people who saw feature X vs people who didn't see the feature --> then average that, across conditions
+
+* feature effects are probably bigger for conditions with fewer counts
+
+* could try to put more limitations on which features are seen in conditions w fewer counts - 
+
+
+## Test features order effects
+
+All participants saw and rated the prevalence of the same set of 16 test features, in random order. Did the order of test feature/prevalence judgment questions matter for prevalence judgments? No. 
+
+```{r analysis-test-order-effects}
+glmmTMB(prevalence ~ num_generics * prop_generics * test_feature_order + (1|participant) + (1|test_feature),
+        data = data_tidy,
+        family = beta_family(link = "logit")) %>% 
+  summary()
+```
+
+
+# Power analysis
+
+What is the smallest effect size of interest?
+
+Bootstrapped power analysis to detect the following effects:
+
+* main effect of condition
+* main effect of proportionality, in same model as count
+* main effect of proportionality, in same model as count - in mixed conditions only
+
+```{r power-analysis, eval = FALSE}
+# set parameters
+simulations <- 300
+sample_size_per_condition <- c(20, 30, 40)
+
+# set up table of parameters
+power_setup <- crossing(
+  alpha = 0.05, # p-value threshold
+  sample_size_per_condition = sample_size_per_condition, # test these sample sizes
+  simulation = rep(1:simulations, sample_size_per_condition %>% length()) # n simulations per each of the tested sample sizes
+)
+
+# get list of conditions
+conditions <- sort(unique(data_tidy$condition))
+
+# create a function to resample specified sample size and run analyses on the resample
+bootstrap_analysis <- function(sample_size_per_condition, alpha = 0.05, simulation = NULL) {
+  # iterating over conditions, resample participants in that condition to reach specified sample size
+  resampled_data <- purrr::map_dfr(conditions, function(cond) {
+    # get list of participants in condition
+    participants_in_cond <- data_tidy %>%
+      filter(condition == cond) %>%
+      pull(participant) %>%
+      unique()
+    # construct list of participants to resample (with replacement)
+    resample_participants_list <- sample(participants_in_cond,
+                                         sample_size_per_condition,
+                                         replace = TRUE)
+    # resample those participants & bind into df
+    map_dfr(resample_participants_list, function(participant) {
+      data_tidy %>%
+        filter(participant == participant)
+    })
+  })
+
+  # run models & pull p-values from each model
+  analysis_results <- tibble(
+    # condition
+    condition = glmmTMB(prevalence ~ condition + (1|participant) + (1|test_feature),
+                        data = resampled_data,
+                        family = beta_family(link = "logit")) %>%
+      Anova() %>%
+      pull(`Pr(>Chisq)`),
+    
+    # prop generics
+    prop_generics = summary(glmmTMB(prevalence ~ prop_generics + (1|participant) + (1|test_feature),
+                                    data = resampled_data,
+                                    family = beta_family(link = "logit")))$coefficients$cond["prop_generics", "Pr(>|z|)"],
+    
+    # prop generics, controlling for num generics
+    prop_generics_ctrl = summary(glmmTMB(prevalence ~ prop_generics + num_generics + (1|participant) + (1|test_feature),
+                                         data = resampled_data,
+                                         family = beta_family(link = "logit")))$coefficients$cond["prop_generics", "Pr(>|z|)"]
+    )
+
+  return(analysis_results)
+}
+
+
+# run the function using the parameters we set up in the power table
+power_results <- power_setup %>%
+  mutate(analysis_results = pmap(power_setup, bootstrap_analysis)) %>%
+  unnest(cols = c(analysis_results))
+
+# for each sample size & analysis, calculate power
+power_analysis <- power_results %>%
+  group_by(sample_size_per_condition) %>%
+  
+  # power = percentage of times p < .05
+  summarize(condition = sum(condition < .05) / n(),
+            prop_generics = sum(prop_generics < .05) / n(),
+            prop_generics_ctrl = sum(prop_generics_ctrl < .05) / n())
+
+# export to csv
+write_csv(power_analysis, file = "study8_power_analysis.csv")
+```
+
+
+
+
+
+# Footnotes
+
+```{r}
+sessionInfo()
+```
