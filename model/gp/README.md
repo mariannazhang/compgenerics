@@ -19,8 +19,8 @@ Because the likelihoods are no longer Gaussian (they are now Bernoulli), we have
 | Parameter | Effect |
 |---|---|
 | `lengthscale` | How far known training points influence neighbors (small = only close neighbors are influenced, large = even far neighbors are influenced) |
-| `sigma` | GP amplitude (vertical scale) |
-| `prior_mean` | Baseline `f` far from training data; `sigmoid(prior_mean)` = default P(kind-linked) |
+| `sigma` | average distance of `f` away from its mean |
+| `prior_mean` | Baseline `f` important for baseline rate of P(kind-linked) especially in areas of the embedding space where we see no training points; `sigmoid(prior_mean)` = default P(kind-linked) |
 
 ## Study 9
 - Participants only see generic statements, so training features are labeled "1" (kind-linked).
