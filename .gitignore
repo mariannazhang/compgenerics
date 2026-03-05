@@ -13,6 +13,8 @@ model/__pycache__
 
 # admin
 IRB/
+model/**/__pycache__
+model/scratch/
 receipts/
 
 # intermediate files
