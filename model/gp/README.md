@@ -26,5 +26,7 @@ Because the likelihoods are no longer Gaussian (they are now Bernoulli), we have
 - Participants only see generic statements, so training features are labeled "1" (kind-linked).
 - Training features depended on condition (physical / diet / personality / heterogeneous)
 - The GP predicts P(kind-linked) for 15 test features in the 2D sentence-embedding space
-    - TODO: extend to 384d or middle ground d embedding space
+    - TODO: extend to 384d or middle ground d embedding space (full analysis)
+    - TODO: for viz, plot in 2d space but use numbers/ similiarities from 384d (though check if we can somehow plot the bg)
+    - TODO: choose to fit the beta linking function or just use the same generic beta weights for all features (based on those from feature set 1)
 - Lengthscale & prior mean is fit per participant (maximizing likelihood of their slider responses)
