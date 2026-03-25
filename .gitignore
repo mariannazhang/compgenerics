@@ -10,11 +10,11 @@ analyses/0_anonymize_data.R
 model/background
 model/model-alt
 model/__pycache__
+model/**/__pycache__
+model/scratch/
 
 # admin
 IRB/
-model/**/__pycache__
-model/scratch/
 receipts/
 
 # intermediate files
