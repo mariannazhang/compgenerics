@@ -28,5 +28,15 @@ Because the likelihoods are no longer Gaussian (they are now Bernoulli), we have
 - The GP predicts P(kind-linked) for 15 test features in the 2D sentence-embedding space
     - TODO: extend to 384d or middle ground d embedding space (full analysis)
     - TODO: for viz, plot in 2d space but use numbers/ similiarities from 384d (though check if we can somehow plot the bg)
-    - TODO: choose to fit the beta linking function or just use the same generic beta weights for all features (based on those from feature set 1)
+    - done: choose to fit the beta linking function for each feature
+
+
+Different forms of analysis:
 - Lengthscale & prior mean is fit per participant (maximizing likelihood of their slider responses)
+- Lengthscale is fit per participant & prior mean is fit across population
+- Lengthscale & prior mean are fit across population
+- Contrast with "null model" which does not fit lengthscale and instead has a high length scale (generalization is invariant based on where in feature space you are)
+
+Different DVs from analysis:
+- Compare / train the coherence estimate to the prevalence judgment
+- Use the linking function to generate samples of prevalence judgments from coherence
