@@ -40,3 +40,7 @@ Different forms of analysis:
 Different DVs from analysis:
 - Compare / train the coherence estimate to the prevalence judgment
 - Use the linking function to generate samples of prevalence judgments from coherence
+
+# RSA
+
+`rsa.py` is a jax implementation of `model.py` that implements a literal listener, speaker, pragmatic listener, and level 2 speaker. Tests to confirm identical results are in `test_rsa.ipynb`.
