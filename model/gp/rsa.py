@@ -36,13 +36,15 @@ def decode(feature_vec: jnp.ndarray, vocab: list) -> list:
 # STATE ENUMERATION
 #####################
 
+# states = pairs of (beta params, feature mask)
+
 def _log_beta(a, b):
     """log B(a, b) = log Gamma(a) + log Gamma(b) - log Gamma(a+b)"""
     return gammaln(a) + gammaln(b) - gammaln(a + b)
 
 def enumerate_states(V: int, alpha: float = DEFAULT_ALPHA, beta: float = DEFAULT_BETA):
     """
-    Enumerate all feature_mask states with Beta-Binomial prior.
+    Enumerate all (alpha, beta) pairs with Beta-Binomial prior.
 
     Marginalizes over coherence analytically:
       log P(mask | alpha, beta) = log B(alpha+k, beta+V-k) - log B(alpha, beta)
