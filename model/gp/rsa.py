@@ -33,39 +33,40 @@ def decode(feature_vec: jnp.ndarray, vocab: list) -> list:
     return [vocab[i] for i, v in enumerate(feature_vec) if v > 0.5]
 
 #####################
-# STATE ENUMERATION
+# FEATURE SET HYPOTHESIS ENUMERATION
 #####################
 
-# states = pairs of (beta params, feature mask)
+# feature_set_hyps = pairs of (beta params, feature mask)
 
 def _log_beta(a, b):
     """log B(a, b) = log Gamma(a) + log Gamma(b) - log Gamma(a+b)"""
     return gammaln(a) + gammaln(b) - gammaln(a + b)
 
-def enumerate_states(V: int, alpha: float = DEFAULT_ALPHA, beta: float = DEFAULT_BETA):
+def enumerate_feature_set_hyps(V: int, alpha: float = DEFAULT_ALPHA, beta: float = DEFAULT_BETA):
     """
-    Enumerate all (alpha, beta) pairs with Beta-Binomial prior.
+    Enumerate all 2^V feature-set hypotheses with Beta-Binomial prior.
 
+    Each hypothesis is a binary mask over V features indicating which are kind-linked.
     Marginalizes over coherence analytically:
       log P(mask | alpha, beta) = log B(alpha+k, beta+V-k) - log B(alpha, beta)
 
-    where k = number of ones in the mask. alpha and beta are pseudocounts:
+    where k = number of ones in the mask, V = total number of features.
+    alpha and beta are pseudocounts:
       alpha = prior count of kind-linked features
       beta  = prior count of non-kind-linked features
     alpha=beta=1 is uniform (equivalent to the old discrete uniform prior).
 
     Returns:
-      states_masks:       (2^V, V)  binary feature mask per state
+      hyp_masks:          (2^V, V)  binary feature mask per hypothesis
       prior_log_weights:  (2^V,)    log P(mask | alpha, beta)
     """
-    states_masks = jnp.array(list(iterproduct([0.0, 1.0], repeat=V)))  # (2^V, V)
-    k = jnp.sum(states_masks, axis=1)                                   # (2^V,)
+    hyp_masks = jnp.array(list(iterproduct([0.0, 1.0], repeat=V)))  # (2^V, V)
+    k = jnp.sum(hyp_masks, axis=1)                                   # (2^V,)
 
     # Each mask has probability B(alpha+k, beta+V-k) / B(alpha, beta)
-    # (no binomial coefficient — we enumerate individual masks, not counts)
     log_bb = _log_beta(alpha + k, beta + V - k) - _log_beta(alpha, beta)
 
-    return states_masks, log_bb
+    return hyp_masks, log_bb
 
 #####################
 # MEANING FUNCTION
@@ -118,14 +119,14 @@ def literal_listener(data: list,
                  alpha=beta=1 is uniform.
 
     Returns dict:
-      "states_masks":     (2^V, V)  kind-feature mask per state
+      "hyp_masks":        (2^V, V)  kind-feature mask per hypothesis
       "log_weights":      (2^V,)    unnormalized log posterior
       "weights":          (2^V,)    normalized posterior (sums to 1)
     """
     V = len(vocab)
-    states_masks, prior_log_weights = enumerate_states(V, alpha, beta)
+    hyp_masks, prior_log_weights = enumerate_feature_set_hyps(V, alpha, beta)
 
-    log_lik = jnp.zeros(states_masks.shape[0])
+    log_lik = jnp.zeros(hyp_masks.shape[0])
 
     for utt, inst in data:
         inst_features = inst.features  # (V,)
@@ -136,13 +137,13 @@ def literal_listener(data: list,
             likelihood = jnp.where(m > 0.5, 0.95, 0.05)
             return jnp.log(likelihood)
 
-        log_lik = log_lik + vmap(state_loglik)(states_masks)  # (2^V,)
+        log_lik = log_lik + vmap(state_loglik)(hyp_masks)  # (2^V,)
 
     log_weights = prior_log_weights + log_lik
     weights = softmax(log_weights)
 
     return {
-        "states_masks":  states_masks,
+        "hyp_masks":     hyp_masks,
         "log_weights":   log_weights,
         "weights":       weights,
     }
@@ -167,8 +168,8 @@ def _expected_jaccard_l0(kind_features: jnp.ndarray,
     inst = Instance(kind="", features=inst_features)
 
     posterior = literal_listener([(utt, inst)], vocab, alpha, beta, lesioned)
-    weights   = posterior["weights"]       # (2^V,)
-    masks     = posterior["states_masks"]  # (2^V, V)
+    weights   = posterior["weights"]    # (2^V,)
+    masks     = posterior["hyp_masks"]  # (2^V, V)
 
     true_restricted = kind_features * inst_features   # (V,)
 
@@ -228,10 +229,10 @@ def pragmatic_listener(data: list,
     Returns same dict format as literal_listener.
     """
     V = len(vocab)
-    states_masks, prior_log_weights = enumerate_states(V, alpha, beta)
-    N_states = states_masks.shape[0]
+    hyp_masks, prior_log_weights = enumerate_feature_set_hyps(V, alpha, beta)
+    N_hyps = hyp_masks.shape[0]
 
-    log_lik = jnp.zeros(N_states)
+    log_lik = jnp.zeros(N_hyps)
 
     for utt, inst in data:
         inst_features = inst.features  # (V,)
@@ -242,13 +243,13 @@ def pragmatic_listener(data: list,
                                 alpha, beta, lesioned)
             return jnp.log(jnp.clip(utt_probs[utt_idx], 1e-9, 1.0))
 
-        log_lik = log_lik + vmap(state_log_speaker_lik)(states_masks)
+        log_lik = log_lik + vmap(state_log_speaker_lik)(hyp_masks)
 
     log_weights = prior_log_weights + log_lik
     weights = softmax(log_weights)
 
     return {
-        "states_masks":  states_masks,
+        "hyp_masks":     hyp_masks,
         "log_weights":   log_weights,
         "weights":       weights,
     }
@@ -273,8 +274,8 @@ def _expected_jaccard_l1(kind_features: jnp.ndarray,
     inst = Instance(kind="", features=inst_features)
 
     posterior = pragmatic_listener([(utt, inst)], vocab, alpha, beta, lesioned)
-    weights   = posterior["weights"]       # (2^V,)
-    masks     = posterior["states_masks"]  # (2^V, V)
+    weights   = posterior["weights"]    # (2^V,)
+    masks     = posterior["hyp_masks"]  # (2^V, V)
 
     true_restricted = kind_features * inst_features
 
