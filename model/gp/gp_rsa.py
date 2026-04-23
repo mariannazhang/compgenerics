@@ -1,18 +1,22 @@
 """
 gp_rsa.py — GP-RSA Integration Model
 
-RSA is run independently per training feature to produce soft labels,
-which are then used as GP training targets to predict coherence at test features.
+The listener is uncertain about the true kind-feature set. RSA produces a joint
+posterior over all 2^V possible feature-set masks after getting data (utterance, feature)
+from the speaker. Each mask implies a different GP over the embedding space. The final 
+prediction marginalizes over all masks:
 
-    z_i = P(kind-linked | u_i, x_i)   [via per-feature RSA]
-    P(z' | x', X_train, z_soft) = BGP(z' | x', X_train, z_soft)  [via GP]
+    P(z' | x', X_train, u) = sum_z  BGP(z' | X_train, z, x') * P(z | u, X_train)
 
 Flow:
-  1. For each training feature i: run RSA with (u_i, inst_i) -> soft label z_i
-  2. Stack soft labels z_soft = [z_1, ..., z_N]
-  3. Feed (X_train, z_soft) into GP to predict at test features x_test
+  1. Run RSA (L0 or L1) on all training data jointly
+     -> posterior weights over 2^V masks, shape (2^V,)
+  2. vmap laplace_predict over all masks (or top-K by weight)
+     -> theta per mask, shape (2^V, M) or (K, M)
+  3. Marginalize: theta_test = weights @ thetas, shape (M,)
 """
 
+import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
 
@@ -34,61 +38,39 @@ from gp import (
 
 
 #####################
-# PER-FEATURE SOFT LABELS
+# JOINT RSA POSTERIOR
 #####################
 
-def rsa_soft_labels(
+def rsa_joint_posterior(
     data: list,
     vocab: list,
     alpha: float = DEFAULT_ALPHA,
     beta: float = DEFAULT_BETA,
     listener: str = "L0",
     lesioned: bool = False,
-) -> jnp.ndarray:
+) -> dict:
     """
-    Run RSA independently per training feature to get soft kind-linked labels.
-
-    For each (utterance, instance) pair, runs RSA with V=1 (just that feature)
-    and returns P(z_i = 1 | u_i, x_i) as a scalar.
+    Run RSA on all training data jointly to get a posterior over feature-set masks.
 
     Args:
-        data:     list of (Utterance, Instance) pairs, one per training feature
-                  Instance.features must be a binary jnp array of shape (1,)
-                  (i.e. scoped to just that feature)
-        vocab:    list of length 1 per call — the single feature name
-                  OR a list of V feature names if instances are full V-dim vectors
-                  (in that case, marginal is extracted for the uttered feature)
-        alpha:    Beta prior alpha (pseudocount for kind-linked)
-        beta:     Beta prior beta  (pseudocount for not-kind-linked)
+        data:     list of (Utterance, Instance) pairs, all training observations
+        vocab:    list of V feature name strings
+        alpha:    Beta prior alpha
+        beta:     Beta prior beta
         listener: "L0" for literal listener, "L1" for pragmatic listener
         lesioned: if True, generic utterances treated as specific
 
-    Returns:
-        z_soft: (N,) soft labels in [0, 1], one per training feature
+    Returns dict:
+        "hyp_masks":   (2^V, V) — all binary masks
+        "weights":     (2^V,)   — normalized posterior P(z | u, x)
+        "log_weights": (2^V,)   — unnormalized log posterior
     """
     listener_fn = literal_listener if listener == "L0" else pragmatic_listener
-
-    z_soft = []
-    for utt, inst in data:
-        # Run RSA with just this one (utterance, instance) pair
-        # vocab here is the full vocab; inst.features is full V-dim
-        # We extract the marginal P(z_i = 1) for the uttered feature
-        V = inst.features.shape[0]
-        post = listener_fn([(utt, inst)], list(range(V)), alpha, beta, lesioned)
-
-        weights = post["weights"]      # (2^V,)
-        masks   = post["hyp_masks"]    # (2^V, V)
-
-        # Marginal P(z_{feat_idx} = 1)
-        feat_idx = utt.feature_idx
-        p_kind = jnp.sum(weights * masks[:, feat_idx])
-        z_soft.append(p_kind)
-
-    return jnp.array(z_soft)  # (N,)
+    return listener_fn(data, vocab, alpha, beta, lesioned)
 
 
 #####################
-# TEST COHERENCE PREDICTION (GP v2)
+# TEST COHERENCE PREDICTION (GP v2, joint)
 #####################
 
 def predict_test_coherence(
@@ -103,17 +85,21 @@ def predict_test_coherence(
     beta: float = DEFAULT_BETA,
     listener: str = "L0",
     lesioned: bool = False,
+    top_k: int = None,
 ):
     """
-    Predict coherence P(kind-linked) at test features using GP v2.
+    Predict coherence P(kind-linked) at test features, marginalizing over
+    the listener's uncertainty about which features are kind-linked.
 
-    RSA is run per training feature to get soft labels, which are then used
-    as GP training targets to predict at test feature embeddings.
+    For each hypothesis mask z in the RSA posterior:
+        BGP(z' | X_train, z, x_test)  [GP conditioned on z as training labels]
+    Then marginalizes:
+        theta_test = sum_z  P(z | u, x) * BGP(z' | X_train, z, x_test)
 
     Args:
         x_test:        (M, D) or (D,) — test feature embedding(s)
         X_train:       (N, D) — training feature embeddings
-        data_train:    list of N (Utterance, Instance) pairs, one per training feature
+        data_train:    list of (Utterance, Instance) pairs
         vocab:         list of V feature name strings
         kernel_params: GP kernel hyperparameters
         m:             GP prior mean
@@ -122,20 +108,42 @@ def predict_test_coherence(
         beta:          RSA Beta prior beta
         listener:      "L0" or "L1"
         lesioned:      if True, generic utterances treated as specific
+        top_k:         if set, only use the top-K highest-weight masks;
+                       if None, use all 2^V masks
 
     Returns:
         theta_test: (M,) — P(kind-linked) at test features
-        f_mean:     (M,) — GP latent mean at test features
-        f_var:      (M,) — GP latent variance at test features
+        f_mean:     (M,) — GP latent mean (weighted average across masks)
+        f_var:      (M,) — GP latent variance (weighted average across masks)
     """
     x_test = jnp.atleast_2d(x_test)
 
-    z_soft = rsa_soft_labels(data_train, vocab, alpha, beta, listener, lesioned)  # (N,)
+    posterior = rsa_joint_posterior(data_train, vocab, alpha, beta, listener, lesioned)
+    hyp_masks = posterior["hyp_masks"]  # (2^V, V)
+    weights   = posterior["weights"]    # (2^V,)
 
-    return laplace_predict(
-        X_train, z_soft, x_test, kernel_params,
-        kernel_name=kernel_name, prior_mean=m,
-    )
+    if top_k is not None:
+        top_k_idx = jnp.argsort(weights)[-top_k:]
+        hyp_masks = hyp_masks[top_k_idx]           # (K, V)
+        weights   = weights[top_k_idx]
+        weights   = weights / jnp.sum(weights)     # renormalize
+
+    # vmap laplace_predict over masks — each mask is a different set of training labels
+    def predict_single_mask(mask):
+        theta, f_mean, f_var = laplace_predict(
+            X_train, mask, x_test, kernel_params,
+            kernel_name=kernel_name, prior_mean=m,
+        )
+        return theta, f_mean, f_var
+
+    thetas, f_means, f_vars = jax.vmap(predict_single_mask)(hyp_masks)
+    # thetas, f_means, f_vars each shape (2^V or K, M)
+
+    theta_test = jnp.dot(weights, thetas)   # (M,)
+    f_mean_out = jnp.dot(weights, f_means)  # (M,)
+    f_var_out  = jnp.dot(weights, f_vars)   # (M,)
+
+    return theta_test, f_mean_out, f_var_out
 
 
 #####################
@@ -156,6 +164,7 @@ def prevalence_log_likelihood(
     listener: str = "L0",
     lesioned: bool = False,
     beta_concentration: float = 5.0,
+    top_k: int = None,
 ) -> jnp.ndarray:
     """
     Log P(prevalence judgments | GP params) using a Beta linking function.
@@ -169,7 +178,7 @@ def prevalence_log_likelihood(
         x_tests:            (M, D) — test feature embeddings
         p_tests:            (M,)   — observed participant prevalence judgments in [0, 1]
         X_train:            (N, D) — training feature embeddings
-        data_train:         list of N (Utterance, Instance) pairs
+        data_train:         list of (Utterance, Instance) pairs
         vocab:              list of V feature name strings
         kernel_params:      GP kernel hyperparameters
         m:                  GP prior mean
@@ -179,13 +188,14 @@ def prevalence_log_likelihood(
         listener:           "L0" or "L1"
         lesioned:           if True, generic utterances treated as specific
         beta_concentration: sharpness of Beta linking function
+        top_k:              if set, only use top-K highest-weight masks
 
     Returns:
         scalar log-likelihood
     """
     theta_tests, _, _ = predict_test_coherence(
         x_tests, X_train, data_train, vocab,
-        kernel_params, m, kernel_name, alpha, beta, listener, lesioned,
+        kernel_params, m, kernel_name, alpha, beta, listener, lesioned, top_k,
     )
     theta_tests = jnp.clip(theta_tests, 1e-6, 1 - 1e-6)
 
@@ -220,15 +230,16 @@ def fit_gp_rsa(
     listener: str = "L0",
     lesioned: bool = False,
     beta_concentration: float = 5.0,
+    top_k: int = None,
 ) -> dict:
     """
     Fit GP hyperparameters (kernel_params, m) from participant prevalence judgments,
-    using RSA-derived soft labels as GP training targets.
+    marginalizing over the RSA joint posterior over feature-set masks.
 
     Uses grid search over kernel_params x m.
 
     Args:
-        data_train:          list of N (Utterance, Instance) pairs — one per training feature
+        data_train:          list of (Utterance, Instance) pairs
         vocab:               list of V feature name strings
         X_train:             (N, D) — training feature embeddings
         x_tests:             (M, D) — test feature embeddings
@@ -241,6 +252,7 @@ def fit_gp_rsa(
         listener:            "L0" or "L1"
         lesioned:            if True, use lesioned meaning function
         beta_concentration:  Beta linking function concentration
+        top_k:               if set, only use top-K highest-weight RSA masks
 
     Returns dict:
         "best_kernel_params":  best kernel hyperparameters
@@ -255,8 +267,19 @@ def fit_gp_rsa(
     if m_grid is None:
         m_grid = jnp.array([-4.0, -3.0, -2.0, -1.0, 0.0])
 
-    # Compute soft labels once — they don't depend on kernel params or m
-    z_soft = rsa_soft_labels(data_train, vocab, alpha, beta, listener, lesioned)
+    # Compute RSA posterior once — it doesn't depend on kernel params or m
+    posterior  = rsa_joint_posterior(data_train, vocab, alpha, beta, listener, lesioned)
+    hyp_masks  = posterior["hyp_masks"]  # (2^V, V)
+    weights    = posterior["weights"]    # (2^V,)
+
+    if top_k is not None:
+        top_k_idx = jnp.argsort(weights)[-top_k:]
+        hyp_masks = hyp_masks[top_k_idx]
+        weights   = weights[top_k_idx]
+        weights   = weights / jnp.sum(weights)
+
+    log_beta_fn = lambda a, b: gammaln(a) + gammaln(b) - gammaln(a + b)
+    p_clipped   = jnp.clip(p_tests, 1e-6, 1 - 1e-6)
 
     best_ll = -jnp.inf
     best_kernel_params = kernel_param_grid[0]
@@ -265,17 +288,19 @@ def fit_gp_rsa(
 
     for kp in kernel_param_grid:
         for m in m_grid:
-            theta_tests, _, _ = laplace_predict(
-                X_train, z_soft, x_tests, kp,
-                kernel_name=kernel_name, prior_mean=float(m),
-            )
+            def predict_single_mask(mask):
+                theta, _, _ = laplace_predict(
+                    X_train, mask, x_tests, kp,
+                    kernel_name=kernel_name, prior_mean=float(m),
+                )
+                return theta
+
+            thetas      = jax.vmap(predict_single_mask)(hyp_masks)  # (K or 2^V, M)
+            theta_tests = jnp.dot(weights, thetas)                   # (M,)
             theta_tests = jnp.clip(theta_tests, 1e-6, 1 - 1e-6)
 
             alpha_beta = theta_tests * beta_concentration
             beta_beta  = (1 - theta_tests) * beta_concentration
-            p_clipped  = jnp.clip(p_tests, 1e-6, 1 - 1e-6)
-
-            log_beta_fn = lambda a, b: gammaln(a) + gammaln(b) - gammaln(a + b)
             ll = jnp.sum(
                 (alpha_beta - 1) * jnp.log(p_clipped)
                 + (beta_beta - 1) * jnp.log(1 - p_clipped)
