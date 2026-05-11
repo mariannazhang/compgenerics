@@ -29,7 +29,7 @@ def speaker(u_i: str, z_i: int, beta: float, prior_z1: float) -> float:
     S1(u_i | z_i): speaker probability via softmax over L0 utility.
     Utility = L0(z_i | u_i), i.e. how well u_i communicates z_i to the literal listener.
     """
-    utilities = {u: literal_listener(z_i, u, prior_z1) for u in UTTERANCES}
+    utilities = {u: literal_listener(z_i, u, prior_z1) for u in UTTERANCES} # instead of Jaccard sim, use lit listener posterior as utility
     norm = sum(np.exp(beta * utilities[u]) for u in UTTERANCES)
     return np.exp(beta * utilities[u_i]) / norm
 
