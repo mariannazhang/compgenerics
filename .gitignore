@@ -43,3 +43,7 @@ data/processed
 rsconnect/
 settings.json
 .Rproj.user
+
+# ds.store
+.DS_Store
+model/DS_Store
