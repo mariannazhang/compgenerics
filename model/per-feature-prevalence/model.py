@@ -16,7 +16,7 @@ LITERAL_TRUTH_VALUES = {
 def literal_listener(z_i: int, u_i: str, prior_z1: float) -> float:
     """
     L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
-    V=1 case: only two hypotheses (z=0, z=1), prior is prior_z1 = P(z=1).
+    Only two hypotheses (z=0, z=1), prior is prior_z1 = P(z=1).
     """
     prior = {1: prior_z1, 0: 1.0 - prior_z1}
     unnorm = {z: prior[z] * LITERAL_TRUTH_VALUES[(u_i, z)] for z in [0, 1]}
@@ -41,7 +41,7 @@ def p_u_given_y(u_i: str, y_i: float, beta: float) -> float:
     P(z_i=1 | y_i) = sigmoid(y_i), used as both the prior for L0 and the
     marginalizing weight over z_i.
     """
-    p_z1 = expit(y_i)
+    p_z1 = expit(y_i) # P(z_i=1 | y_i) = sigmoid(y_i)
     p_z0 = 1.0 - p_z1
     return speaker(u_i, 1, beta, p_z1) * p_z1 + speaker(u_i, 0, beta, p_z1) * p_z0
 
