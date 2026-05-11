@@ -4,26 +4,28 @@ from scipy.special import expit  # sigmoid
 
 
 UTTERANCES = ["generic", "specific"]
-# soft truth values: how likely an utterance is true given z_i
-LITERAL_TRUTH_VALUES = {
-    ("generic",  1): 0.95,
-    ("generic",  0): 0.05,
-    ("specific", 1): 0.95,
-    ("specific", 0): 0.95,
+# how likely an utterance is true given z_i (kind-linked or not)
+# together define a meaning function
+MEANING_FUNCTION = { # semantic likelihood (as opposed to literal listener likelihood in prag model)
+    ("generic",  1): 1, 
+    ("generic",  0): 0, 
+    ("specific", 1): 1,
+    ("specific", 0): 1,
 }
 
-
+# calculate semantic likelihood of utterance 
+# in the past: sampled coherence from prior, then use that to 
 def literal_listener(z_i: int, u_i: str, prior_z1: float) -> float:
     """
     L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
     Only two hypotheses (z=0, z=1), prior is prior_z1 = P(z=1).
     """
     prior = {1: prior_z1, 0: 1.0 - prior_z1}
-    unnorm = {z: prior[z] * LITERAL_TRUTH_VALUES[(u_i, z)] for z in [0, 1]}
+    unnorm = {z: prior[z] * MEANING_FUNCTION[(u_i, z)] for z in [0, 1]}
     total = unnorm[0] + unnorm[1]
     return unnorm[z_i] / total
 
-
+# TODO: incorporate soft conditioning on semantic likelihood
 def speaker(u_i: str, z_i: int, beta: float, prior_z1: float) -> float:
     """
     S1(u_i | z_i): speaker probability via softmax over L0 utility.
