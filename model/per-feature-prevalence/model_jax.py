@@ -12,7 +12,6 @@ MEANING_MATRIX = jnp.array([
 
 N_UTTERANCES = MEANING_MATRIX.shape[0]
 
-
 def literal_listener(z_i: int, u_i: int, prior_z1: jnp.ndarray) -> jnp.ndarray:
     """
     L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
@@ -57,7 +56,6 @@ def p_u_given_y(u_i: int, y_i: jnp.ndarray, beta: jnp.ndarray) -> jnp.ndarray:
     return speaker(u_i, 0, beta, p_z1) * p_z0 + speaker(u_i, 1, beta, p_z1) * p_z1
 
 # TODO: rename output_scale to sigma / gp param
-# TODO: double check diff
 def rbf_kernel(X: jnp.ndarray, length_scale: jnp.ndarray,
                output_scale: jnp.ndarray) -> jnp.ndarray:
     """
@@ -120,6 +118,93 @@ def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
     log_utterance = jnp.sum(log_utt_per_feat)
 
     return log_utterance + log_gp_prior
+
+# P(z|y)
+def coherence_from_pseudocoherence(y: jnp.ndarray) -> jnp.ndarray:
+    """
+    P(z'=1) = sigmoid(y)
+    """
+    return jax.nn.sigmoid(y)
+
+############################
+##  Beta Mixture Fitting  ##
+############################
+
+# For each feature j, fits the prevalence of j based on participant judgments:
+#   p'_j ~ P(z'=1)_j · Beta(α_kl, β_kl)  +  (1 - P(z'=1)_j) · Beta(α_nkl, β_nkl)
+#
+# Params are optimised in log-space (log_a1, log_b1, log_a2, log_b2) so
+# positivity is enforced.  All J features are fit in parallel
+# via vmap over jax.scipy.optimize.minimize call.
+
+def neg_ll_one_feature(log_params: jnp.ndarray, r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
+    """Negative log-likelihood for one feature's Beta mixture, in log-param space."""
+    a1, b1, a2, b2 = jnp.exp(log_params)
+    log_pdf1 = jax.scipy.stats.beta.logpdf(r, a1, b1)
+    log_pdf2 = jax.scipy.stats.beta.logpdf(r, a2, b2)
+    # log-sum-exp trick: log(th·p1 + (1-th)·p2)
+    log_mix = jnp.logaddexp(jnp.log(th) + log_pdf1, jnp.log1p(-th) + log_pdf2)
+    return -jnp.sum(log_mix)
+
+
+def fit_one_feature(r: jnp.ndarray, th: jnp.ndarray, log_init: jnp.ndarray) -> jnp.ndarray:
+    """Return best-of-inits log_params for one feature."""
+    def run(log_x0):
+        result = jax.scipy.optimize.minimize(
+            neg_ll_one_feature, log_x0, args=(r, th), method='BFGS'
+        )
+        return result.x, result.fun
+
+    xs, funs = jax.vmap(run)(log_init)          # (n_inits, 4), (n_inits,)
+    best_idx = jnp.argmin(funs)
+    return xs[best_idx]                          # (4,)
+
+
+# (a1,b1,a2,b2) starting points in log-space; values chosen to span skewed/symmetric Beta shapes
+_LOG_INITS = jnp.log(jnp.array([
+    [5., 1., 1., 5.],
+    [3., 1., 1., 3.],
+    [8., 2., 2., 5.],
+    [2., 2., 2., 2.],
+]))
+
+
+@jax.jit
+def fit_beta_mixtures_all_features(
+    responses: jnp.ndarray,
+    pz1: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Fit a Beta mixture for each feature in parallel.
+
+    N = num participants, J = num features
+    responses: (N, J) prevalence ratings in [0, 1]
+    pz1:       (N, J) P(z'=1) per participant per feature, from sigmoid(y)
+    Returns:   (J, 4) array — columns are [alpha_kl, beta_kl, alpha_nkl, beta_nkl],
+               with alpha_kl as the higher-mean component.
+    """
+    eps = 1e-6
+    r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
+    th = jnp.clip(pz1,       eps, 1 - eps)   # (N, J)
+
+    # vmap over features (axis 1 → leading axis for vmap)
+    log_params = jax.vmap(
+        lambda r_j, th_j: fit_one_feature(r_j, th_j, _LOG_INITS)
+    )(r.T, th.T)                              # (J, 4) in log-space
+
+    params = jnp.exp(log_params)              # (J, 4): [a1, b1, a2, b2]
+    a1, b1, a2, b2 = params[:, 0], params[:, 1], params[:, 2], params[:, 3]
+
+    mean1 = a1 / (a1 + b1)
+    mean2 = a2 / (a2 + b2)
+    # swap so column 0/1 is always the high-prevalence (kind-linked) component
+    swap = mean1 < mean2
+    alpha_kl  = jnp.where(swap, a2, a1)
+    beta_kl   = jnp.where(swap, b2, b1)
+    alpha_nkl = jnp.where(swap, a1, a2)
+    beta_nkl  = jnp.where(swap, b1, b2)
+
+    return jnp.stack([alpha_kl, beta_kl, alpha_nkl, beta_nkl], axis=1)  # (J, 4)
 
 
 def make_log_density_fn(
