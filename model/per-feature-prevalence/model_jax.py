@@ -60,12 +60,22 @@ def rbf_kernel(X: jnp.ndarray, length_scale: jnp.ndarray,
                output_scale: jnp.ndarray) -> jnp.ndarray:
     """
     X: shape (n, 2) — 2D feature embeddings
-    Returns covariance matrix shape (n, n) with diag offset for numerical stability.
+    Returns covariance matrix shape (n, n) with diag jitter for numerical stability.
     """
     diff = X[:, None, :] - X[None, :, :]             # (n, n, 2)
     sq_dist = jnp.sum(diff ** 2, axis=-1)             # (n, n)
     K = output_scale**2 * jnp.exp(-sq_dist / (2 * length_scale**2))
-    return K + 1e-6 * jnp.eye(K.shape[0])
+    return K + 1e-4 * jnp.eye(K.shape[0])
+
+
+def _mvn_logpdf_chol(x: jnp.ndarray, mean: jnp.ndarray, cov: jnp.ndarray) -> jnp.ndarray:
+    """MVN log-pdf via Cholesky — numerically stable for near-singular covariances."""
+    n = x.shape[0]
+    L = jnp.linalg.cholesky(cov)                          # lower triangular
+    diff = x - mean
+    z = jnp.linalg.solve(L, diff)                         # L^{-1}(x - mu)
+    log_det = 2.0 * jnp.sum(jnp.log(jnp.diag(L)))
+    return -0.5 * (n * jnp.log(2 * jnp.pi) + log_det + jnp.dot(z, z))
 
 
 # def rbf_kernel(x1, x2, lengthscale, sigma):
@@ -109,7 +119,7 @@ def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
     mu     = jnp.full(full_y.shape[0], mu_0)
     sigma  = rbf_kernel(X_all, length_scale, output_scale)    # (n+1, n+1)
 
-    log_gp_prior = jax.scipy.stats.multivariate_normal.logpdf(full_y, mean=mu, cov=sigma)
+    log_gp_prior = _mvn_logpdf_chol(full_y, mu, sigma)
 
     def log_utt_fn(u_i, y_i):
         return jnp.log(p_u_given_y(u_i, y_i, beta) + 1e-300)
@@ -133,32 +143,21 @@ def coherence_from_pseudocoherence(y: jnp.ndarray) -> jnp.ndarray:
 # For each feature j, fits the prevalence of j based on participant judgments:
 #   p'_j ~ P(z'=1)_j · Beta(α_kl, β_kl)  +  (1 - P(z'=1)_j) · Beta(α_nkl, β_nkl)
 #
-# Params are optimised in log-space (log_a1, log_b1, log_a2, log_b2) so
-# positivity is enforced.  All J features are fit in parallel
-# via vmap over jax.scipy.optimize.minimize call.
+# Params optimised in log-space (log_a1, log_b1, log_a2, log_b2) to enforce positivity.
+# Uses scipy.optimize.minimize with JAX-computed gradients (jax.scipy.optimize unavailable
+# in JAX < 0.4.1).
 
-def neg_ll_one_feature(log_params: jnp.ndarray, r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
+from scipy.optimize import minimize as scipy_minimize
+
+def _neg_ll_one_feature(log_params: jnp.ndarray, r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
     """Negative log-likelihood for one feature's Beta mixture, in log-param space."""
     a1, b1, a2, b2 = jnp.exp(log_params)
     log_pdf1 = jax.scipy.stats.beta.logpdf(r, a1, b1)
     log_pdf2 = jax.scipy.stats.beta.logpdf(r, a2, b2)
-    # log-sum-exp trick: log(th·p1 + (1-th)·p2)
     log_mix = jnp.logaddexp(jnp.log(th) + log_pdf1, jnp.log1p(-th) + log_pdf2)
     return -jnp.sum(log_mix)
 
-
-def fit_one_feature(r: jnp.ndarray, th: jnp.ndarray, log_init: jnp.ndarray) -> jnp.ndarray:
-    """Return best-of-inits log_params for one feature."""
-    def run(log_x0):
-        result = jax.scipy.optimize.minimize(
-            neg_ll_one_feature, log_x0, args=(r, th), method='BFGS'
-        )
-        return result.x, result.fun
-
-    xs, funs = jax.vmap(run)(log_init)          # (n_inits, 4), (n_inits,)
-    best_idx = jnp.argmin(funs)
-    return xs[best_idx]                          # (4,)
-
+_neg_ll_and_grad = jax.jit(jax.value_and_grad(_neg_ll_one_feature))
 
 # (a1,b1,a2,b2) starting points in log-space; values chosen to span skewed/symmetric Beta shapes
 _LOG_INITS = jnp.log(jnp.array([
@@ -169,35 +168,45 @@ _LOG_INITS = jnp.log(jnp.array([
 ]))
 
 
-@jax.jit
+def _fit_one_feature(r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
+    """Best-of-inits BFGS fit for one feature. Returns log_params shape (4,)."""
+    best_x, best_f = None, jnp.inf
+    for log_x0 in _LOG_INITS:
+        def f_and_g(lp):
+            val, grad = _neg_ll_and_grad(jnp.array(lp), r, th)
+            return float(val), jnp.array(grad)
+        result = scipy_minimize(f_and_g, jnp.array(log_x0), jac=True, method='BFGS')
+        if result.fun < best_f:
+            best_f = result.fun
+            best_x = result.x
+    return jnp.array(best_x)
+
+
 def fit_beta_mixtures_all_features(
     responses: jnp.ndarray,
     pz1: jnp.ndarray,
 ) -> jnp.ndarray:
     """
-    Fit a Beta mixture for each feature in parallel.
+    Fit a Beta mixture for each feature.
 
     N = num participants, J = num features
     responses: (N, J) prevalence ratings in [0, 1]
-    pz1:       (N, J) P(z'=1) per participant per feature, from sigmoid(y)
-    Returns:   (J, 4) array — columns are [alpha_kl, beta_kl, alpha_nkl, beta_nkl],
-               with alpha_kl as the higher-mean component.
+    pz1:       (N, J) P(z'=1) per participant per feature
+    Returns:   (J, 4) array — [alpha_kl, beta_kl, alpha_nkl, beta_nkl],
+               alpha_kl is always the higher-mean (kind-linked) component.
     """
     eps = 1e-6
     r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
     th = jnp.clip(pz1,       eps, 1 - eps)   # (N, J)
+    J  = r.shape[1]
 
-    # vmap over features (axis 1 → leading axis for vmap)
-    log_params = jax.vmap(
-        lambda r_j, th_j: fit_one_feature(r_j, th_j, _LOG_INITS)
-    )(r.T, th.T)                              # (J, 4) in log-space
+    log_params = jnp.stack([_fit_one_feature(r[:, j], th[:, j]) for j in range(J)])  # (J, 4)
 
-    params = jnp.exp(log_params)              # (J, 4): [a1, b1, a2, b2]
+    params = jnp.exp(log_params)
     a1, b1, a2, b2 = params[:, 0], params[:, 1], params[:, 2], params[:, 3]
 
     mean1 = a1 / (a1 + b1)
     mean2 = a2 / (a2 + b2)
-    # swap so column 0/1 is always the high-prevalence (kind-linked) component
     swap = mean1 < mean2
     alpha_kl  = jnp.where(swap, a2, a1)
     beta_kl   = jnp.where(swap, b2, b1)
