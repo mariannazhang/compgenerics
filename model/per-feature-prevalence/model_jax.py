@@ -216,6 +216,32 @@ def fit_beta_mixtures_all_features(
     return jnp.stack([alpha_kl, beta_kl, alpha_nkl, beta_nkl], axis=1)  # (J, 4)
 
 
+def beta_mixture_log_likelihood(
+    responses: jnp.ndarray,
+    pz1: jnp.ndarray,
+    beta_params: jnp.ndarray,
+) -> float:
+    """
+    Total log likelihood of observed prevalence ratings under the fitted Beta mixture.
+
+    responses:   (N, J) participant ratings in [0, 1]
+    pz1:         (J,)   posterior mean P(z'=1) per test feature
+    beta_params: (J, 4) [alpha_kl, beta_kl, alpha_nkl, beta_nkl] from fit_beta_mixtures_all_features
+    Returns scalar total log likelihood summed over all participants and features.
+    """
+    eps = 1e-6
+    r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
+    th = jnp.clip(pz1,       eps, 1 - eps)   # (J,)
+    J  = r.shape[1]
+
+    log_params = jnp.log(jnp.clip(beta_params, eps, None))  # (J, 4)
+    total = 0.0
+    for j in range(J):
+        th_j = jnp.full(r.shape[0], th[j])   # broadcast scalar pz1 to (N,)
+        total -= float(_neg_ll_one_feature(log_params[j], r[:, j], th_j))
+    return total
+
+
 def make_log_density_fn(
     training_utt_types: jnp.ndarray,
     training_features: jnp.ndarray,
