@@ -75,3 +75,18 @@ joint feature mcmc, samples of y’ to linking function: r^2 = 0.920
 - compare null hypothesis (large lengthscale) vs. fitting lengthscales (to see if fitting the lengthscale does indeed help explain prevalence judgments, that feature space does matter)
 - plot where lengthscale is fixed vs one where it's fit
 - for comparing the distributions of possible prevalences, can think about how to compare beyond the means
+
+
+## for eval model fit in grid search
+use approx log likelihood of data given parameters using log density fn (joint)
+
+start with small grid search, then
+
+could use black box optimizer that doesnt take gradients
+
+
+
+https://docs.scipy.org/doc/scipy/reference/optimize.html  
+for noisy fn, could use a gp to optimize it  
+pybads  
+https://acerbilab.github.io/pybads/index.html
