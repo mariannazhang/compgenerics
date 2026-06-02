@@ -223,7 +223,7 @@ def make_log_density_fn(
     params: dict,
 ):
     """
-    Returns a BlackJAX-compatible log_density function.
+    Returns a BlackJAX-compatible log_density function for a single test feature.
 
     The returned function takes a position PyTree:
         position = {
@@ -240,5 +240,56 @@ def make_log_density_fn(
         training = {**training_static, 'coherences': position['training_coherences']}
         test = {**test_static, 'coherence': position['test_coherence']}
         return log_likelihood(training, test, params)
+
+    return log_density
+
+
+def make_log_density_fn_joint(
+    training_utt_types: jnp.ndarray,
+    training_features: jnp.ndarray,
+    test_features: jnp.ndarray,
+    params: dict,
+):
+    """
+    Returns a BlackJAX-compatible log_density function for all test features jointly.
+
+    Samples training and all test pseudocoherences in one (n_train + J)-dimensional chain,
+    respecting GP correlations across all features simultaneously.
+
+    The returned function takes a position PyTree:
+        position = {
+            'training_coherences': jnp.array shape (n_train,),
+            'test_coherences':     jnp.array shape (J,)
+        }
+    and returns a scalar log density.
+    """
+    training_static = {'utt_types': training_utt_types, 'features': training_features}
+
+    @jax.jit
+    def log_density(position):
+        y_train  = position['training_coherences']   # (n_train,)
+        y_test   = position['test_coherences']        # (J,)
+        u_vec    = training_static['utt_types']
+        x_vec    = training_static['features']
+
+        mu_0         = params['mu_0']
+        length_scale = params['length_scale']
+        output_scale = params['output_scale']
+        beta         = params['beta']
+
+        # Stack all features: test first, then training (matches log_likelihood convention)
+        X_all  = jnp.vstack([test_features, x_vec])          # (J + n_train, 2)
+        full_y = jnp.concatenate([y_test, y_train])           # (J + n_train,)
+        mu     = jnp.full(full_y.shape[0], mu_0)
+        sigma  = rbf_kernel(X_all, length_scale, output_scale)
+
+        log_gp_prior = _mvn_logpdf_chol(full_y, mu, sigma)
+
+        def log_utt_fn(u_i, y_i):
+            return jnp.log(p_u_given_y(u_i, y_i, beta) + 1e-300)
+
+        log_utterance = jnp.sum(jax.vmap(log_utt_fn)(u_vec, y_train))
+
+        return log_utterance + log_gp_prior
 
     return log_density

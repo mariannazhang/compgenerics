@@ -53,15 +53,25 @@ now we are considering the "scientist model" that is trying to infer the underly
 $$ P(\theta|\vec{u},p') \propto P(p'|\vec{u},\theta)P(\theta)$$
 
 
-instead of taking max y' and sending it to linking function, we can instead normalize over y', then send all normalized samples of y' to linking function (because w/ all the samples we can calculate the normalizing constant), then divide all unnorm by normconst -> set of samples has normalied prob
+
+
+
+
+## versions of model
+
+### bayesian approx of linking fn
+instead of taking MLE y' and sending it to linking function, we can instead normalize over y', then send all normalized samples of y' to linking function (because w/ all the samples we can calculate the normalizing constant), then divide all unnorm by normconst -> set of samples has normalied prob
 at the moment, we're just sending the mean / expected y' but we could really do the full distribution (more bayesian)
 
+### joint sampling of features
 see if it makes sense to sample all the different test features
 
-compare null hypothesis (large lengthscale) vs. fitting lengthscales (to see if fitting the lengthscale does indeed help explain prevalence judgments)
+### results
+per feature mcmc, MLE of y’ to linking function: r^2 = 0.908
+per feature mcmc, samples of y’ to linking function: r^2 = 0.921
+joint feature mcmc, samples of y’ to linking function: r^2 = 0.920
 
-
-plot where lengthscale is fixed vs one where it's fit
-
-
-for comparing the distributions, can think about how to compare
+## eventual goal for modeling
+- compare null hypothesis (large lengthscale) vs. fitting lengthscales (to see if fitting the lengthscale does indeed help explain prevalence judgments, that feature space does matter)
+- plot where lengthscale is fixed vs one where it's fit
+- for comparing the distributions of possible prevalences, can think about how to compare beyond the means
