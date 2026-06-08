@@ -77,11 +77,15 @@ joint feature mcmc, samples of y’ to linking function: r^2 = 0.920
 - for comparing the distributions of possible prevalences, can think about how to compare beyond the means
 
 
-## for eval model fit in grid search
+## for eval model fit
+
+### in grid search
 use approx log likelihood of data given parameters using log density fn (joint)
 
 start with small grid search, then
 
+### using an optimizer instead 
+(not gradient-based)
 could use black box optimizer that doesnt take gradients
 
 
