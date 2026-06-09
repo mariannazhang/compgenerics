@@ -197,7 +197,7 @@ def fit_beta_mixtures_all_features(
     """
     eps = 1e-6
     r  = jnp.clip(responses, 0.01, 0.99)   # (N, J) clip to avoid beta extremes
-    th = jnp.clip(pz1,       eps, 1 - eps)   # (N, J)
+    th = jnp.clip(pz1,       eps, 1 - eps) # (N, J)
     J  = r.shape[1]
 
     log_params = jnp.stack([_fit_one_feature(r[:, j], th[:, j]) for j in range(J)])  # (J, 4)
