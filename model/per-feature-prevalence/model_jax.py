@@ -196,7 +196,7 @@ def fit_beta_mixtures_all_features(
                alpha_kl is always the higher-mean (kind-linked) component.
     """
     eps = 1e-6
-    r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
+    r  = jnp.clip(responses, 0.01, 0.99)   # (N, J) clip to avoid beta extremes
     th = jnp.clip(pz1,       eps, 1 - eps)   # (N, J)
     J  = r.shape[1]
 
