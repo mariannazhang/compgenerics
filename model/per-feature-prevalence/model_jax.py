@@ -127,6 +127,13 @@ def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
     log_utt_per_feat = jax.vmap(log_utt_fn)(u_vec, y_vec)    # (n,)
     log_utterance = jnp.sum(log_utt_per_feat)
 
+    print(log_utterance + log_gp_prior)
+    if log_utterance + log_gp_prior > 2000:
+        print(f"Warning: Likelihood too large (log_utterance + log_gp_prior = {log_utterance + log_gp_prior})")
+        print(f"Params: mu_0={mu_0}, length_scale={length_scale}, output_scale={output_scale}, beta={beta}")
+        print(f"log_utterance: {log_utterance}, log_gp_prior: {log_gp_prior}")
+        raise ValueError("Likelihood too large: log_utterance + log_gp_prior exceeds 2000")
+   
     return log_utterance + log_gp_prior
 
 # P(z|y)
