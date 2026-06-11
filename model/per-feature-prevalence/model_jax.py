@@ -168,14 +168,17 @@ from scipy.special import betainc as scipy_betainc
 
 RESPONSE_BIN_HALFWIDTH = 1.0 / 200.0
 
-# keep exp(log_params) well inside float64 range; the bounded likelihood goes
-# flat long before this, so the bound is never active at an optimum
-_LOG_PARAM_LIMIT = 30.0
+# The interval likelihood plateaus once a component is much narrower than a
+# response bin (its mass saturates within the bin), so α, β beyond ~1/h² are
+# unidentifiable — cap them there to keep fitted values finite and readable.
+_LOG_PARAM_LIMIT = 15.0
 
 
-def _neg_ll_one_feature(log_params, r, th):
+def _neg_ll_one_feature(log_params, r, th, counts=None):
     """Negative interval log-likelihood for one feature's Beta mixture, in
-    log-param space. Pure float64 numpy/scipy; returns a python float."""
+    log-param space. Pure float64 numpy/scipy; returns a python float.
+    counts: optional per-row multiplicities (for data compacted to unique
+    (r, th) pairs)."""
     log_params = np.clip(np.asarray(log_params, dtype=np.float64),
                          -_LOG_PARAM_LIMIT, _LOG_PARAM_LIMIT)
     a1, b1, a2, b2 = np.exp(log_params)
@@ -186,7 +189,10 @@ def _neg_ll_one_feature(log_params, r, th):
     p1 = scipy_betainc(a1, b1, hi) - scipy_betainc(a1, b1, lo)
     p2 = scipy_betainc(a2, b2, hi) - scipy_betainc(a2, b2, lo)
     mix = th * p1 + (1.0 - th) * p2
-    return float(-np.sum(np.log(np.maximum(mix, 1e-300))))
+    log_mix = np.log(np.maximum(mix, 1e-300))
+    if counts is None:
+        return float(-np.sum(log_mix))
+    return float(-np.dot(counts, log_mix))
 
 
 # (a1,b1,a2,b2) starting points in log-space; values chosen to span skewed/symmetric Beta shapes
@@ -200,12 +206,18 @@ _LOG_INITS = np.log(np.array([
 
 def _fit_one_feature(r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
     """Best-of-inits L-BFGS-B fit for one feature. Returns log_params shape (4,)."""
-    r_np  = np.asarray(r,  dtype=np.float64)
-    th_np = np.asarray(th, dtype=np.float64)
+    # responses are discrete (0-100 slider), so compact to unique (r, th) pairs
+    # with counts — cuts each likelihood eval from N rows to ~#unique values
+    pairs = np.stack([np.asarray(r,  dtype=np.float64),
+                      np.asarray(th, dtype=np.float64)], axis=1)
+    uniq, counts = np.unique(pairs, axis=0, return_counts=True)
+    r_u, th_u = uniq[:, 0], uniq[:, 1]
+    counts = counts.astype(np.float64)
+
     best_x, best_f = None, np.inf
     for log_x0 in _LOG_INITS:
         result = scipy_minimize(
-            _neg_ll_one_feature, log_x0, args=(r_np, th_np),
+            _neg_ll_one_feature, log_x0, args=(r_u, th_u, counts),
             method='L-BFGS-B',
             bounds=[(-_LOG_PARAM_LIMIT, _LOG_PARAM_LIMIT)] * 4,
         )
@@ -268,7 +280,9 @@ def beta_mixture_log_likelihood(
     th = np.clip(np.asarray(pz1, dtype=np.float64), eps, 1 - eps)  # (J,)
     J  = r.shape[1]
 
-    log_params = np.log(np.maximum(np.asarray(beta_params, dtype=np.float64), eps))  # (J, 4)
+    # clip at the fit's own param bound so re-evaluating a fit reproduces its NLL
+    param_floor = np.exp(-_LOG_PARAM_LIMIT)
+    log_params = np.log(np.maximum(np.asarray(beta_params, dtype=np.float64), param_floor))  # (J, 4)
     total = 0.0
     for j in range(J):
         th_j = np.full(r.shape[0], th[j])    # broadcast scalar pz1 to (N,)
