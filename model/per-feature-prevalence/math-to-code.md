@@ -1,36 +1,41 @@
 # Parameter Estimation for Participant Data: math ↔ code
 
-Notation: $\theta$ = GP params; $\vec{u}$ = utterances; $\mathbf{r}$ = ratings $(N,J)$;
-$\vec{y},\vec{y}'$ = latent train/test pseudocoherences; $\phi$ = Beta-mixture shapes.
+Notation:   
+$\theta$ = GP params  
+$\vec{u}$ = utterance  
+$\mathbf{r}$ = prevalence ratings $(N,J)$  
+$\vec{y},\vec{y}'$ = latent train/test pseudocoherences  
+$\phi$ = Beta-mixture shapes
 
-## The inference problem
-
+## Inference
+As "the scientists" we want to estimate which parameters are most likely to give rise to the participant prevalence response data $\mathbf{r}$ given the utterances $\vec{u}$.
 $$
 \underbrace{P(\theta \mid \mathbf{r},\vec{u})}_{\texttt{VBMC.optimize()}}
 \;\propto\;
-\underbrace{P(\mathbf{r}\mid\vec{u},\theta)}_{\texttt{log\_lik}}
+\underbrace{P(\mathbf{r}\mid\vec{u},\theta)}_{\texttt{log\_likelihood}}
 \;\cdot\;
-\underbrace{P(\theta)}_{\texttt{log\_prior}}
+\underbrace{P(\theta)}_{\texttt{log\_gp\_prior}}
 $$
 
 Everything below is one evaluation of $P(\mathbf{r}\mid\vec{u},\theta)$ — the body of
 `log_joint(phi)`.
 
-## Likelihood = marginalize out the latent coherences
+## Likelihood, marginalizing out latent coherences
 
 $$
+\begin{align*}
 P(\mathbf{r}\mid\vec{u},\theta)
-= \int P(\mathbf{r}\mid\vec{y}')P(\vec{y}',\vec{y}\mid\vec{u},\theta)d\vec{y}d\vec{y}'
-\;\approx\;
-\underbrace{\frac1S\sum_{s=1}^{S} P(\mathbf{r}\mid\vec{y}'_s)}_{\texttt{logsumexp(log\_liks\_s) - log S}},
+&= \int \int P(\mathbf{r}\mid\vec{y}')P(\vec{y}',\vec{y}\mid\vec{u},\theta)d\vec{y}d\vec{y}'
+\; \\
+&\approx\;
+\underbrace{\frac1S\sum_{s=1}^{S} P(\mathbf{r}\mid\vec{y}'_s)}_{\texttt{logsumexp(log\_liks\_s) - log S}};
 \qquad
 \underbrace{\vec{y}'_s \sim P(\vec{y}',\vec{y}\mid\vec{u},\theta)}_{\substack{\texttt{blackjax NUTS on}\\\texttt{make\_log\_density\_fn\_joint}}}
+\end{align*}
 $$
 
-The sampling target involves only $\vec{u}$ and the GP — **not** $\mathbf{r}$ or $\phi$ —
-so the draws $\vec{y}'_s$ exist before any Beta fitting.
-
-## The sampling target (what NUTS explores)
+## Sampling Target
+(what no-uturn-sampling explores)
 
 $$
 \log P(\vec{y}',\vec{y}\mid\vec{u},\theta)
