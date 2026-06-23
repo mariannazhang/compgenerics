@@ -94,3 +94,20 @@ https://docs.scipy.org/doc/scipy/reference/optimize.html
 for noisy fn, could use a gp to optimize it  
 pybads  
 https://acerbilab.github.io/pybads/index.html
+
+
+## linking fn
+- to what extent would things change if we fit the prevalence response params (beta fn params) outside of the inner loop
+- what's the prev distribution for this specific feature if it is indeed generic vs. if it's not a generic feature
+- ~if it's a prior belief about what's kl and nkl, then we can say it's independent from the predicted coherence~
+
+- on the other hand, it could be that influence of generalization is influenced by the beta distributions (e.g., some features have more bimodal distribs, so changes in coherence have a strong effect on such features, or some features have little diff between kl vs nkl)
+
+
+
+double check how many samples of the pseudocoherence we're taking in each iteration, since the beta params could be overfitting to the stochasticity here
+
+
+also start by just using the coherence as the prevalence and optimize based on that, bypassing linking fn param fits.
+
+check w/ claude for underflow / overflow / where it's coming from

@@ -127,6 +127,13 @@ def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
     log_utt_per_feat = jax.vmap(log_utt_fn)(u_vec, y_vec)    # (n,)
     log_utterance = jnp.sum(log_utt_per_feat)
 
+    print(log_utterance + log_gp_prior)
+    if log_utterance + log_gp_prior > 2000:
+        print(f"Warning: Likelihood too large (log_utterance + log_gp_prior = {log_utterance + log_gp_prior})")
+        print(f"Params: mu_0={mu_0}, length_scale={length_scale}, output_scale={output_scale}, beta={beta}")
+        print(f"log_utterance: {log_utterance}, log_gp_prior: {log_gp_prior}")
+        raise ValueError("Likelihood too large: log_utterance + log_gp_prior exceeds 2000")
+   
     return log_utterance + log_gp_prior
 
 # P(z|y)
@@ -143,24 +150,53 @@ def coherence_from_pseudocoherence(y: jnp.ndarray) -> jnp.ndarray:
 # For each feature j, fits the prevalence of j based on participant judgments:
 #   p'_j ~ P(z'=1)_j · Beta(α_kl, β_kl)  +  (1 - P(z'=1)_j) · Beta(α_nkl, β_nkl)
 #
-# Params optimised in log-space (log_a1, log_b1, log_a2, log_b2) to enforce positivity.
-# Uses scipy.optimize.minimize with JAX-computed gradients (jax.scipy.optimize unavailable
-# in JAX < 0.4.1).
+# Likelihood is the *interval* (binned) likelihood: responses are 0-100 slider
+# values / 100, so a response r is treated as the event r ∈ [r-h, r+h] with
+# h = 1/200, and P(r) = F(r+h) - F(r-h) under the mixture CDF. Each term is a
+# probability (≤ 1), so the likelihood is bounded — unlike the density
+# likelihood, which is unbounded when a component collapses to a near-delta
+# spike on tied responses (e.g. many participants answering exactly 50).
+# This also handles responses of exactly 0 or 1 without clipping.
+#
+# Params optimised in log-space (log_a1, log_b1, log_a2, log_b2) to enforce
+# positivity. Implemented in numpy/scipy float64 with finite-difference
+# gradients: JAX's betainc has no gradient w.r.t. the shape parameters.
 
+import numpy as np
 from scipy.optimize import minimize as scipy_minimize
+from scipy.special import betainc as scipy_betainc
 
-def _neg_ll_one_feature(log_params: jnp.ndarray, r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
-    """Negative log-likelihood for one feature's Beta mixture, in log-param space."""
-    a1, b1, a2, b2 = jnp.exp(log_params)
-    log_pdf1 = jax.scipy.stats.beta.logpdf(r, a1, b1)
-    log_pdf2 = jax.scipy.stats.beta.logpdf(r, a2, b2)
-    log_mix = jnp.logaddexp(jnp.log(th) + log_pdf1, jnp.log1p(-th) + log_pdf2)
-    return -jnp.sum(log_mix)
+RESPONSE_BIN_HALFWIDTH = 1.0 / 200.0
 
-_neg_ll_and_grad = jax.jit(jax.value_and_grad(_neg_ll_one_feature))
+# The interval likelihood plateaus once a component is much narrower than a
+# response bin (its mass saturates within the bin), so α, β beyond ~1/h² are
+# unidentifiable — cap them there to keep fitted values finite and readable.
+_LOG_PARAM_LIMIT = 15.0
+
+
+def _neg_ll_one_feature(log_params, r, th, counts=None):
+    """Negative interval log-likelihood for one feature's Beta mixture, in
+    log-param space. Pure float64 numpy/scipy; returns a python float.
+    counts: optional per-row multiplicities (for data compacted to unique
+    (r, th) pairs)."""
+    log_params = np.clip(np.asarray(log_params, dtype=np.float64),
+                         -_LOG_PARAM_LIMIT, _LOG_PARAM_LIMIT)
+    a1, b1, a2, b2 = np.exp(log_params)
+    r  = np.asarray(r,  dtype=np.float64)
+    th = np.asarray(th, dtype=np.float64)
+    lo = np.clip(r - RESPONSE_BIN_HALFWIDTH, 0.0, 1.0)
+    hi = np.clip(r + RESPONSE_BIN_HALFWIDTH, 0.0, 1.0)
+    p1 = scipy_betainc(a1, b1, hi) - scipy_betainc(a1, b1, lo)
+    p2 = scipy_betainc(a2, b2, hi) - scipy_betainc(a2, b2, lo)
+    mix = th * p1 + (1.0 - th) * p2
+    log_mix = np.log(np.maximum(mix, 1e-300))
+    if counts is None:
+        return float(-np.sum(log_mix))
+    return float(-np.dot(counts, log_mix))
+
 
 # (a1,b1,a2,b2) starting points in log-space; values chosen to span skewed/symmetric Beta shapes
-_LOG_INITS = jnp.log(jnp.array([
+_LOG_INITS = np.log(np.array([
     [5., 1., 1., 5.],
     [3., 1., 1., 3.],
     [8., 2., 2., 5.],
@@ -169,13 +205,22 @@ _LOG_INITS = jnp.log(jnp.array([
 
 
 def _fit_one_feature(r: jnp.ndarray, th: jnp.ndarray) -> jnp.ndarray:
-    """Best-of-inits BFGS fit for one feature. Returns log_params shape (4,)."""
-    best_x, best_f = None, jnp.inf
+    """Best-of-inits L-BFGS-B fit for one feature. Returns log_params shape (4,)."""
+    # responses are discrete (0-100 slider), so compact to unique (r, th) pairs
+    # with counts — cuts each likelihood eval from N rows to ~#unique values
+    pairs = np.stack([np.asarray(r,  dtype=np.float64),
+                      np.asarray(th, dtype=np.float64)], axis=1)
+    uniq, counts = np.unique(pairs, axis=0, return_counts=True)
+    r_u, th_u = uniq[:, 0], uniq[:, 1]
+    counts = counts.astype(np.float64)
+
+    best_x, best_f = None, np.inf
     for log_x0 in _LOG_INITS:
-        def f_and_g(lp):
-            val, grad = _neg_ll_and_grad(jnp.array(lp), r, th)
-            return float(val), jnp.array(grad)
-        result = scipy_minimize(f_and_g, jnp.array(log_x0), jac=True, method='BFGS')
+        result = scipy_minimize(
+            _neg_ll_one_feature, log_x0, args=(r_u, th_u, counts),
+            method='L-BFGS-B',
+            bounds=[(-_LOG_PARAM_LIMIT, _LOG_PARAM_LIMIT)] * 4,
+        )
         if result.fun < best_f:
             best_f = result.fun
             best_x = result.x
@@ -196,8 +241,8 @@ def fit_beta_mixtures_all_features(
                alpha_kl is always the higher-mean (kind-linked) component.
     """
     eps = 1e-6
-    r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
-    th = jnp.clip(pz1,       eps, 1 - eps)   # (N, J)
+    r  = responses                          # (N, J) interval likelihood handles 0 and 1
+    th = jnp.clip(pz1, eps, 1 - eps)        # (N, J)
     J  = r.shape[1]
 
     log_params = jnp.stack([_fit_one_feature(r[:, j], th[:, j]) for j in range(J)])  # (J, 4)
@@ -222,7 +267,8 @@ def beta_mixture_log_likelihood(
     beta_params: jnp.ndarray,
 ) -> float:
     """
-    Total log likelihood of observed prevalence ratings under the fitted Beta mixture.
+    Total interval log likelihood of observed prevalence ratings under the fitted
+    Beta mixture (same binned likelihood as the fit; bounded above by 0).
 
     responses:   (N, J) participant ratings in [0, 1]
     pz1:         (J,)   posterior mean P(z'=1) per test feature
@@ -230,15 +276,17 @@ def beta_mixture_log_likelihood(
     Returns scalar total log likelihood summed over all participants and features.
     """
     eps = 1e-6
-    r  = jnp.clip(responses, eps, 1 - eps)   # (N, J)
-    th = jnp.clip(pz1,       eps, 1 - eps)   # (J,)
+    r  = np.asarray(responses, dtype=np.float64)            # (N, J)
+    th = np.clip(np.asarray(pz1, dtype=np.float64), eps, 1 - eps)  # (J,)
     J  = r.shape[1]
 
-    log_params = jnp.log(jnp.clip(beta_params, eps, None))  # (J, 4)
+    # clip at the fit's own param bound so re-evaluating a fit reproduces its NLL
+    param_floor = np.exp(-_LOG_PARAM_LIMIT)
+    log_params = np.log(np.maximum(np.asarray(beta_params, dtype=np.float64), param_floor))  # (J, 4)
     total = 0.0
     for j in range(J):
-        th_j = jnp.full(r.shape[0], th[j])   # broadcast scalar pz1 to (N,)
-        total -= float(_neg_ll_one_feature(log_params[j], r[:, j], th_j))
+        th_j = np.full(r.shape[0], th[j])    # broadcast scalar pz1 to (N,)
+        total -= _neg_ll_one_feature(log_params[j], r[:, j], th_j)
     return total
 
 
