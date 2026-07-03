@@ -12,6 +12,7 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - pandas
   - pip:
       - jax==0.10.2
       - pyvbmc==1.0.4
