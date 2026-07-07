@@ -3,9 +3,6 @@
 # Setup:
 #   conda env create -f environment.yml
 #   python -m ipykernel install --user --name compgenerics --display-name "Python (compgenerics)"
-#
-# Note (Windows): if your conda base lives under a path with spaces, keep envs
-# in a space-free location, e.g. `conda config --add envs_dirs C:\envs`.
 name: compgenerics
 channels:
   - conda-forge
