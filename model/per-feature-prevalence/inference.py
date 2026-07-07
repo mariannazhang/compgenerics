@@ -483,3 +483,94 @@ def run_vbmc_free_shapes(geom, responses_cond, max_evals=150, n_alt=1, x0=None,
     Same return format as run_vbmc()."""
     return _run_vbmc_on(make_log_joint_free_shapes(geom, responses_cond, n_alt=n_alt, verbose=verbose),
                         max_evals, x0, n_posterior_samples)
+
+
+# ---------------------------------------------------------------------------
+# 2-D VBMC with the length scale PINNED (null / distance-blind model)
+# ---------------------------------------------------------------------------
+# phi2 = [mu_0, log_sigma]: the 3-D box minus the length-scale coordinate. The
+# pinned ls may sit far outside the 3-D ls box (e.g. 10 >> the cloud diameter,
+# where the kernel is effectively constant); its prior term is a constant and
+# is OMITTED, so log-joint values are not directly comparable to the 3-D fit's
+# (compare summed log Z instead).
+X0_2, LB_2, UB_2, PLB_2, PUB_2 = X0[1:], LB[1:], UB[1:], PLB[1:], PUB[1:]
+
+
+def make_log_joint_fixed_ls(cond_data, ls_fixed, counter=None, verbose=True):
+    """2-D objective at pinned length scale. phi2 = [mu_0, log_sigma]; linking shapes fixed."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        mu_0, log_sigma = float(phi[0]), float(phi[1])
+        sigma = float(np.exp(log_sigma))
+        counter[0] += 1
+        ll = total_log_lik(cond_data, float(ls_fixed), mu_0, sigma)
+        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
+                  f"sigma={sigma:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def make_log_joint_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, n_alt=1,
+                                        counter=None, verbose=True):
+    """2-D objective at pinned length scale with the linking shapes PROFILED OUT per eval."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        mu_0, log_sigma = float(phi[0]), float(phi[1])
+        sigma = float(np.exp(log_sigma))
+        counter[0] += 1
+        ll = total_log_lik_free_shapes(geom, responses_cond, float(ls_fixed), mu_0, sigma, n_alt=n_alt)
+        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
+                  f"sigma={sigma:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def _run_vbmc_on_2d(log_joint, ls_fixed, max_evals, x0, n_posterior_samples):
+    """pyVBMC driver over the 2-D phi2 box; ls_samples is filled with the pinned
+    constant so the return format (and saved .npz) matches the 3-D fits."""
+    from pyvbmc import VBMC
+    import time
+    _patch_pyvbmc_varg_squeeze()
+    t0 = time.time()
+    vbmc = VBMC(log_joint,
+                X0_2 if x0 is None else np.asarray(x0, dtype=float),
+                LB_2, UB_2, PLB_2, PUB_2,
+                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
+    result, stats = vbmc.optimize()
+    phi_samples, _ = result.sample(n_posterior_samples)
+    return {
+        'ls_samples':    np.full(phi_samples.shape[0], float(ls_fixed)),
+        'mu0_samples':   phi_samples[:, 0],
+        'sigma_samples': np.exp(phi_samples[:, 1]),
+        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
+        'convergence_status': str(stats['convergence_status']),
+        'runtime_s': time.time() - t0,
+        'result': result, 'stats': stats,
+    }
+
+
+def run_vbmc_fixed_ls(cond_data, ls_fixed, max_evals=150, x0=None,
+                      n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 2-D VBMC posterior over (mu_0, output_scale) at a PINNED length
+    scale, with FIXED linking shapes (baked into cond_data).
+
+    Same return format as run_vbmc(); ls_samples is the pinned constant."""
+    return _run_vbmc_on_2d(make_log_joint_fixed_ls(cond_data, ls_fixed, verbose=verbose),
+                           ls_fixed, max_evals, x0, n_posterior_samples)
+
+
+def run_vbmc_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, max_evals=150, n_alt=1,
+                                  x0=None, n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 2-D VBMC posterior over (mu_0, output_scale) at a PINNED length
+    scale, with the linking shapes PROFILED OUT per evaluation.
+
+    Same return format as run_vbmc(); ls_samples is the pinned constant."""
+    return _run_vbmc_on_2d(
+        make_log_joint_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, n_alt=n_alt, verbose=verbose),
+        ls_fixed, max_evals, x0, n_posterior_samples)
