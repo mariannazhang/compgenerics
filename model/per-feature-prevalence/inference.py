@@ -574,3 +574,196 @@ def run_vbmc_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, max_evals=150,
     return _run_vbmc_on_2d(
         make_log_joint_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, n_alt=n_alt, verbose=verbose),
         ls_fixed, max_evals, x0, n_posterior_samples)
+
+
+# ---------------------------------------------------------------------------
+# 4-D VBMC with the speaker rationality INFERRED
+# ---------------------------------------------------------------------------
+# phi4 = [log_ls, mu_0, log_sigma, log_beta]: the 3-D box extended with the RSA
+# speaker rationality beta (elsewhere fixed by design at BETA_SPEAKER=3).
+# beta > 0 -> inferred on the log scale, lognormal-ish prior around the design
+# value. Note beta is informed only by the training utterances (one generic per
+# trained feature per condition), so expect trade-offs with mu_0 and sigma.
+def log_prior_beta(log_beta):   return float(-0.5 * ((log_beta - np.log(3.0)) / 1.0) ** 2)
+
+X0_4  = np.append(X0,  np.log(3.0))
+LB_4  = np.append(LB,  np.log(0.2))
+UB_4  = np.append(UB,  np.log(30.0))
+PLB_4 = np.append(PLB, np.log(1.0))
+PUB_4 = np.append(PUB, np.log(10.0))
+
+
+def make_log_joint_beta(cond_data, counter=None, verbose=True):
+    """4-D objective. phi4 = [log_ls, mu_0, log_sigma, log_beta]; linking shapes fixed."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        log_ls, mu_0, log_sigma, log_beta = (float(phi[0]), float(phi[1]),
+                                             float(phi[2]), float(phi[3]))
+        ls, sigma, beta = float(np.exp(log_ls)), float(np.exp(log_sigma)), float(np.exp(log_beta))
+        counter[0] += 1
+        ll = total_log_lik(cond_data, ls, mu_0, sigma, beta_speaker=beta)
+        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
+        val = ll + lp
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
+                  f"beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def make_log_joint_free_shapes_beta(geom, responses_cond, n_alt=1, counter=None, verbose=True):
+    """4-D objective with the linking shapes PROFILED OUT at every eval."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        log_ls, mu_0, log_sigma, log_beta = (float(phi[0]), float(phi[1]),
+                                             float(phi[2]), float(phi[3]))
+        ls, sigma, beta = float(np.exp(log_ls)), float(np.exp(log_sigma)), float(np.exp(log_beta))
+        counter[0] += 1
+        ll = total_log_lik_free_shapes(geom, responses_cond, ls, mu_0, sigma,
+                                       n_alt=n_alt, beta_speaker=beta)
+        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
+        val = ll + lp
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
+                  f"beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def _run_vbmc_on_4d(log_joint, max_evals, x0, n_posterior_samples):
+    """pyVBMC driver over the 4-D phi4 box; adds beta_samples to the return dict."""
+    from pyvbmc import VBMC
+    import time
+    _patch_pyvbmc_varg_squeeze()
+    t0 = time.time()
+    vbmc = VBMC(log_joint,
+                X0_4 if x0 is None else np.asarray(x0, dtype=float),
+                LB_4, UB_4, PLB_4, PUB_4,
+                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
+    result, stats = vbmc.optimize()
+    phi_samples, _ = result.sample(n_posterior_samples)
+    return {
+        'ls_samples':    np.exp(phi_samples[:, 0]),
+        'mu0_samples':   phi_samples[:, 1],
+        'sigma_samples': np.exp(phi_samples[:, 2]),
+        'beta_samples':  np.exp(phi_samples[:, 3]),
+        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
+        'convergence_status': str(stats['convergence_status']),
+        'runtime_s': time.time() - t0,
+        'result': result, 'stats': stats,
+    }
+
+
+def run_vbmc_beta(cond_data, max_evals=200, x0=None, n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 4-D VBMC posterior over (length_scale, mu_0, output_scale, beta_speaker)
+    with FIXED linking shapes (baked into cond_data).
+
+    Same return format as run_vbmc() plus beta_samples."""
+    return _run_vbmc_on_4d(make_log_joint_beta(cond_data, verbose=verbose),
+                           max_evals, x0, n_posterior_samples)
+
+
+def run_vbmc_free_shapes_beta(geom, responses_cond, max_evals=200, n_alt=1, x0=None,
+                              n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 4-D VBMC posterior over (length_scale, mu_0, output_scale, beta_speaker)
+    with the linking shapes PROFILED OUT per evaluation.
+
+    Same return format as run_vbmc() plus beta_samples."""
+    return _run_vbmc_on_4d(
+        make_log_joint_free_shapes_beta(geom, responses_cond, n_alt=n_alt, verbose=verbose),
+        max_evals, x0, n_posterior_samples)
+
+
+# ---------------------------------------------------------------------------
+# 3-D VBMC with length scale PINNED and speaker rationality INFERRED (null+beta)
+# ---------------------------------------------------------------------------
+# phi3b = [mu_0, log_sigma, log_beta]: the 4-D box minus the length-scale
+# coordinate. The null (distance-blind) model that also frees beta.
+X0_3B  = np.array([X0_4[1], X0_4[2], X0_4[3]])
+LB_3B  = np.array([LB_4[1], LB_4[2], LB_4[3]])
+UB_3B  = np.array([UB_4[1], UB_4[2], UB_4[3]])
+PLB_3B = np.array([PLB_4[1], PLB_4[2], PLB_4[3]])
+PUB_3B = np.array([PUB_4[1], PUB_4[2], PUB_4[3]])
+
+
+def make_log_joint_fixed_ls_beta(cond_data, ls_fixed, counter=None, verbose=True):
+    """3-D objective at pinned length scale. phi3b = [mu_0, log_sigma, log_beta]; shapes fixed."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        mu_0, log_sigma, log_beta = float(phi[0]), float(phi[1]), float(phi[2])
+        sigma, beta = float(np.exp(log_sigma)), float(np.exp(log_beta))
+        counter[0] += 1
+        ll = total_log_lik(cond_data, float(ls_fixed), mu_0, sigma, beta_speaker=beta)
+        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
+                  f"sigma={sigma:.3f}  beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def make_log_joint_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, n_alt=1,
+                                             counter=None, verbose=True):
+    """3-D objective at pinned length scale with the linking shapes PROFILED OUT per eval."""
+    counter = counter if counter is not None else [0]
+    def log_joint(phi):
+        phi = np.asarray(phi).ravel()
+        mu_0, log_sigma, log_beta = float(phi[0]), float(phi[1]), float(phi[2])
+        sigma, beta = float(np.exp(log_sigma)), float(np.exp(log_beta))
+        counter[0] += 1
+        ll = total_log_lik_free_shapes(geom, responses_cond, float(ls_fixed), mu_0, sigma,
+                                       n_alt=n_alt, beta_speaker=beta)
+        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
+        if verbose:
+            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
+                  f"sigma={sigma:.3f}  beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+        return val, TARGET_NOISE
+    return log_joint
+
+
+def _run_vbmc_on_3d_beta(log_joint, ls_fixed, max_evals, x0, n_posterior_samples):
+    """pyVBMC driver over the 3-D phi3b box; ls_samples is the pinned constant, plus beta_samples."""
+    from pyvbmc import VBMC
+    import time
+    _patch_pyvbmc_varg_squeeze()
+    t0 = time.time()
+    vbmc = VBMC(log_joint,
+                X0_3B if x0 is None else np.asarray(x0, dtype=float),
+                LB_3B, UB_3B, PLB_3B, PUB_3B,
+                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
+    result, stats = vbmc.optimize()
+    phi_samples, _ = result.sample(n_posterior_samples)
+    return {
+        'ls_samples':    np.full(phi_samples.shape[0], float(ls_fixed)),
+        'mu0_samples':   phi_samples[:, 0],
+        'sigma_samples': np.exp(phi_samples[:, 1]),
+        'beta_samples':  np.exp(phi_samples[:, 2]),
+        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
+        'convergence_status': str(stats['convergence_status']),
+        'runtime_s': time.time() - t0,
+        'result': result, 'stats': stats,
+    }
+
+
+def run_vbmc_fixed_ls_beta(cond_data, ls_fixed, max_evals=200, x0=None,
+                           n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 3-D VBMC posterior over (mu_0, output_scale, beta_speaker) at a PINNED
+    length scale, with FIXED linking shapes (baked into cond_data).
+
+    Same return format as run_vbmc() plus beta_samples; ls_samples is the pinned constant."""
+    return _run_vbmc_on_3d_beta(make_log_joint_fixed_ls_beta(cond_data, ls_fixed, verbose=verbose),
+                                ls_fixed, max_evals, x0, n_posterior_samples)
+
+
+def run_vbmc_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, max_evals=200, n_alt=1,
+                                       x0=None, n_posterior_samples=int(1e4), verbose=True):
+    """Fit the 3-D VBMC posterior over (mu_0, output_scale, beta_speaker) at a PINNED
+    length scale, with the linking shapes PROFILED OUT per evaluation.
+
+    Same return format as run_vbmc() plus beta_samples; ls_samples is the pinned constant."""
+    return _run_vbmc_on_3d_beta(
+        make_log_joint_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, n_alt=n_alt, verbose=verbose),
+        ls_fixed, max_evals, x0, n_posterior_samples)
