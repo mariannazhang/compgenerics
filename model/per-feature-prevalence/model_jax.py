@@ -55,6 +55,21 @@ def p_u_given_y(u_i: int, y_i: jnp.ndarray, beta: jnp.ndarray) -> jnp.ndarray:
     p_z0 = 1.0 - p_z1
     return speaker(u_i, 0, beta, p_z1) * p_z0 + speaker(u_i, 1, beta, p_z1) * p_z1
 
+def p_u_given_y_literal(u_i: int, y_i: jnp.ndarray, delta: float = 0.05) -> jnp.ndarray:
+    """LITERAL (truth-conditional) utterance likelihood -- no speaker, no pragmatics.
+
+    P(u | y) = sum_z [(1-delta) if u true under z else delta] * P(z | y), i.e.
+    condition on the utterance's literal truth with misspeak noise delta
+    (the gorgo model's `condition(.95 if true else .05)`, marginalized over z).
+    Generics: (1-delta)*pz1 + delta*(1-pz1). Specifics: true under both z ->
+    constant (1-delta) -> zero evidence about y (cancels in the posterior).
+    """
+    p_z1 = jax.nn.sigmoid(y_i)
+    truth = MEANING_MATRIX[u_i]                       # [true if z=0, true if z=1]
+    lik = (1.0 - delta) * truth + delta * (1.0 - truth)
+    return lik[1] * p_z1 + lik[0] * (1.0 - p_z1)
+
+
 # TODO: rename output_scale to sigma / gp param
 def rbf_kernel(X: jnp.ndarray, length_scale: jnp.ndarray,
                output_scale: jnp.ndarray) -> jnp.ndarray:
