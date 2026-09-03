@@ -1,4 +1,10 @@
-# Parameter Estimation for Participant Data: math ↔ code
+# Parameter Estimation for Participant Data: math ↔ code (MCMC inner marginalization)
+
+> This doc describes the **NUTS/Monte-Carlo** version of the inner
+> marginalization over latent coherences (the MCMC notebooks). The current
+> pipeline in `inference.py` replaces that inner step with a **Laplace
+> approximation** — see `math-to-code-laplace.md`. The outer VBMC layer over
+> $\theta$ is the same in both.
 
 Notation:   
 $\theta$ = GP params  
