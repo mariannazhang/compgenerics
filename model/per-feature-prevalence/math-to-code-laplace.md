@@ -1,10 +1,10 @@
 # Parameter Estimation for Participant Data: math ↔ code (Laplace inner marginalization)
 
-This is the math to code writeup for the laplace approximation implementation of the model (as opposed to the earlier implementation, which used NUTS + Monte-Carlo averaging).
-The code is all in `inference.py`.
+This is the math to code writeup for the Laplace approximation implementation of the model (as opposed to the earlier implementation, which used NUTS + Monte-Carlo averaging).
+The code for this parameter estimation is all in `inference.py`, and the code for the model of the learner is in `model_jax.py`.
 
 Notation:  
-$\theta = (\ell, \mu_0, \sigma, \beta)$ = the parameters to fit: GP length scale, GP mean, GP output scale, RSA speaker rationality  
+$\theta = (\ell, \mu_0, \sigma, \beta)$ = the parameters of the coherence function to fit: GP length scale, GP mean, GP output scale, RSA speaker rationality  
 $\vec{u}$ = training utterances  
 $\mathbf{r}$ = prevalence ratings $(N,J)$ (# participants, # test features)  
 $\vec{y},\vec{y}'$ = latent train/test pseudocoherences;  
@@ -35,8 +35,7 @@ Laplace marginal $\log Z_c(\theta)$ over conditions (`total_log_lik`).
 
 ## Likelihood, marginalizing out latent coherences
 
-Per condition, the same integral as the MCMC doc:
-
+For a fixed set of parameters and fixed utterance set $\vec{u}, we calculate the likelihood of the human ratings $mathbf{r}$, marginalizing out the possible latent coherences.
 $$
 \log Z(\theta) = \log P(\mathbf{r}\mid\vec{u},\theta)
 = \log \int P(\mathbf{r}\mid\vec{y}')\,P(\vec{y}',\vec{y}\mid\vec{u},\theta)\,dy
@@ -96,6 +95,7 @@ components that are harmless under interval mass are pathological under the
 density, hence `SHAPE_CLIP`.
 
 ## Linking shapes $\phi$: fixed or profiled out
+<!-- TODO: fix what should be named phi, do we want it to be the linking function or the coherence function? according to overleaf, coherence function. according to old code, ?? -->
 
 **Fixed** (`make_log_joint`, `run_vbmc`): $\phi$ = `DEFAULT_LINK_SHAPES`,
 baked into `cond_data` by `prepare_condition`.
