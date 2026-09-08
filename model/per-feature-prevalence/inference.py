@@ -34,7 +34,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax.scipy.stats import beta as jbeta
 
-from model_jax import (rbf_kernel, p_u_given_y, _mvn_logpdf_chol,
+from model_jax import (rbf_kernel, p_u_given_y, p_u_given_y_literal, _mvn_logpdf_chol,
                        fit_beta_mixtures_all_features)
 
 
@@ -68,32 +68,43 @@ CSV_TO_FEATURE = {
 # ---------------------------------------------------------------------------
 # Geometry + data loading
 # ---------------------------------------------------------------------------
-def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl'):
+def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl', embed=None):
     """Feature embeddings: per-condition trained regions + the shared test set.
 
-    Returns a dict with x_train_cond / u_train_cond (per condition), x_test (J,2),
-    test_feature_names, test_trait, and J.
+    embed: '2d' (UMAP-style projection, cols x_2d/y_2d) or '384d' (unit-norm
+    sentence embeddings, col embedding_384d). Defaults to the module-level EMBED
+    set via set_embed(). The GP machinery is dimension-agnostic; only the
+    field-contour visualizations require '2d'.
+
+    Returns a dict with x_train_cond / u_train_cond (per condition), x_test (J,D),
+    test_feature_names, test_trait, J, and embed.
     """
+    embed = embed or EMBED
     with open(features_pkl_path, 'rb') as f:
         df = pkl.load(f)
     feat_idx = df.set_index('feature')
     train_df = df[df.split == 'train']
 
+    def coords(sub_df):
+        if embed == '2d':
+            return jnp.array(sub_df[['x_2d', 'y_2d']].values)
+        return jnp.array(np.stack(sub_df['embedding_384d'].values))
+
     x_train_cond, u_train_cond, train_names_cond = {}, {}, {}
     for c in CONDITIONS:
         sub = train_df[train_df.in_heterogenous] if c == 'heterogeneous' else train_df[train_df.category == CAT_OF_COND[c]]
-        x_train_cond[c] = jnp.array(sub[['x_2d', 'y_2d']].values)
+        x_train_cond[c] = coords(sub)
         u_train_cond[c] = jnp.zeros(len(sub), dtype=jnp.int32)   # all generic, localized to the region -- fixed by design
         train_names_cond[c] = list(sub['feature'].values)
 
     test_feature_names = list(CSV_TO_FEATURE.values())
-    x_test = jnp.array([feat_idx.loc[n, ['x_2d', 'y_2d']].values for n in test_feature_names])   # (J,2)
+    x_test = coords(feat_idx.loc[test_feature_names])   # (J, D)
     test_trait = [CAT_SHORT[feat_idx.loc[n, 'category']] for n in test_feature_names]
 
     return {'x_train_cond': x_train_cond, 'u_train_cond': u_train_cond,
             'train_names_cond': train_names_cond,
             'x_test': x_test, 'test_feature_names': test_feature_names,
-            'test_trait': test_trait, 'J': int(x_test.shape[0])}
+            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': embed}
 
 
 def load_responses(csv_path, clip_interior=True):
@@ -165,6 +176,36 @@ _grad_fn = jax.jit(jax.grad(_neg_log_post), static_argnames='J')
 _hess_fn = jax.jit(jax.hessian(_neg_log_post), static_argnames='J')
 
 
+# LITERAL-speaker variant of the objective: identical except the utterance
+# likelihood is truth-conditional (p_u_given_y_literal) -- beta_speaker is
+# accepted-and-ignored so the two objectives are call-compatible. Selected per
+# group via cd['speaker'] ('rsa' default | 'literal'), stamped from
+# geom['speaker'] by prepare_condition / _ratings_free_cond_data.
+def _neg_log_post_literal(y, length_scale, mu_0, output_scale, beta_speaker,
+                          X_all, u_train, logpdf_kl, logpdf_nkl, J):
+    y_test, y_train = y[:J], y[J:]
+    mu_vec = jnp.full(y.shape[0], mu_0)
+    K = rbf_kernel(X_all, length_scale, output_scale)
+    log_gp = _mvn_logpdf_chol(y, mu_vec, K)
+
+    def log_utt_fn(u_i, y_i):
+        return jnp.log(p_u_given_y_literal(u_i, y_i) + 1e-300)
+    log_speaker = jnp.sum(jax.vmap(log_utt_fn)(u_train, y_train))
+
+    pz1 = jnp.clip(jax.nn.sigmoid(y_test), EPS, 1.0 - EPS)
+    log_mix = jnp.logaddexp(jnp.log(pz1)[None, :] + logpdf_kl,
+                            jnp.log1p(-pz1)[None, :] + logpdf_nkl)
+    return -(log_gp + log_speaker + jnp.sum(log_mix))
+
+
+_val_fn_lit  = jax.jit(_neg_log_post_literal, static_argnames='J')
+_grad_fn_lit = jax.jit(jax.grad(_neg_log_post_literal), static_argnames='J')
+_hess_fn_lit = jax.jit(jax.hessian(_neg_log_post_literal), static_argnames='J')
+
+_OBJ_FNS = {'rsa': (_val_fn, _grad_fn, _hess_fn),
+            'literal': (_val_fn_lit, _grad_fn_lit, _hess_fn_lit)}
+
+
 def prepare_condition(geom, c, responses_c, link_shapes=DEFAULT_LINK_SHAPES):
     """Per-condition constants for the compiled objective (data-dependent, theta-independent).
 
@@ -183,12 +224,17 @@ def prepare_condition(geom, c, responses_c, link_shapes=DEFAULT_LINK_SHAPES):
             'logpdf_kl':  jbeta.logpdf(r, a_kl, b_kl),
             'logpdf_nkl': jbeta.logpdf(r, a_nkl, b_nkl),
             'J': geom['J'],
-            'D': geom['J'] + int(geom['x_train_cond'][c].shape[0])}
+            'D': geom['J'] + int(geom['x_train_cond'][c].shape[0]),
+            'speaker': geom.get('speaker', 'rsa')}
 
 
 def prepare_all_conditions(geom, responses_cond, link_shapes=DEFAULT_LINK_SHAPES):
-    """prepare_condition() for every condition -> {condition: cd} dict."""
-    return {c: prepare_condition(geom, c, responses_cond[c], link_shapes) for c in CONDITIONS}
+    """prepare_condition() for every condition/group in responses_cond -> {condition: cd} dict.
+
+    Group keys are taken from responses_cond (not the study-9 CONDITIONS constant),
+    so the same machinery serves any study whose geom carries matching
+    x_train_cond / u_train_cond entries."""
+    return {c: prepare_condition(geom, c, responses_cond[c], link_shapes) for c in responses_cond}
 
 
 def laplace_log_Z(cd, length_scale, mu_0, output_scale,
@@ -203,17 +249,18 @@ def laplace_log_Z(cd, length_scale, mu_0, output_scale,
     theta = (float(length_scale), float(mu_0), float(output_scale), float(beta_speaker))
     args = (cd['X_all'], cd['u_train'], cd['logpdf_kl'], cd['logpdf_nkl'])
     D, J = cd['D'], cd['J']
+    val_fn, grad_fn, hess_fn = _OBJ_FNS[cd.get('speaker', 'rsa')]
     y = jnp.full(D, mu_0)                    # init at the GP mean (mu_0)
-    f = float(_val_fn(y, *theta, *args, J=J))
+    f = float(val_fn(y, *theta, *args, J=J))
     for _ in range(n_newton):
-        g  = _grad_fn(y, *theta, *args, J=J)
-        Hm = _hess_fn(y, *theta, *args, J=J) + 1e-6 * jnp.eye(D)   # numerical PD guard
+        g  = grad_fn(y, *theta, *args, J=J)
+        Hm = hess_fn(y, *theta, *args, J=J) + 1e-6 * jnp.eye(D)   # numerical PD guard
         step = jnp.linalg.solve(Hm, g)
         # backtracking (Armijo) line search along the Newton direction
         t, accepted = 1.0, False
         for _ls in range(30):
             y_try = y - t * step
-            f_try = float(_val_fn(y_try, *theta, *args, J=J))
+            f_try = float(val_fn(y_try, *theta, *args, J=J))
             if np.isfinite(f_try) and f_try <= f - 1e-4 * t * float(jnp.dot(g, step)):
                 accepted = True; break
             t *= 0.5
@@ -223,18 +270,18 @@ def laplace_log_Z(cd, length_scale, mu_0, output_scale,
         y, f = y_try, f_try
         if converged:
             break
-    Hm = _hess_fn(y, *theta, *args, J=J) + 1e-6 * jnp.eye(D)
+    Hm = hess_fn(y, *theta, *args, J=J) + 1e-6 * jnp.eye(D)
     sign, logdet = jnp.linalg.slogdet(Hm)
-    gnorm = float(jnp.max(jnp.abs(_grad_fn(y, *theta, *args, J=J))))   # ~0 at the mode
+    gnorm = float(jnp.max(jnp.abs(grad_fn(y, *theta, *args, J=J))))   # ~0 at the mode
     log_Z = -f + 0.5 * D * jnp.log(2.0 * jnp.pi) - 0.5 * logdet
     ok = bool(sign > 0) and bool(np.isfinite(log_Z)) and gnorm < 1e-2
     return float(log_Z), np.asarray(y), ok
 
 
 def total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER):
-    """Sum of Laplace log Z across conditions at the given theta (no theta-prior)."""
+    """Sum of Laplace log Z across the groups in cond_data at the given theta (no theta-prior)."""
     return sum(laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)[0]
-               for c in CONDITIONS)
+               for c in cond_data)
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +313,7 @@ SHAPE_CLIP = (0.1, 100.0)
 def laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER):
     """Posterior-mode coherence pz1 = sigmoid(y_hat_test) per condition. Returns {c: (J,)}."""
     out = {}
-    for c in CONDITIONS:
+    for c in cond_data:
         _, y_hat, _ = laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)
         out[c] = 1.0 / (1.0 + np.exp(-y_hat[:cond_data[c]['J']]))
     return out
@@ -278,14 +325,15 @@ def _ratings_free_cond_data(geom):
     coherence from training alone (the analog of the MCMC coherence sampler,
     which never saw the test ratings)."""
     cd = {}
-    for c in CONDITIONS:
+    for c in geom['x_train_cond']:
         J = geom['J']
         cd[c] = {'X_all': jnp.vstack([geom['x_test'], geom['x_train_cond'][c]]),
                  'u_train': geom['u_train_cond'][c],
                  'logpdf_kl':  jnp.zeros((0, J)),
                  'logpdf_nkl': jnp.zeros((0, J)),
                  'J': J,
-                 'D': J + int(geom['x_train_cond'][c].shape[0])}
+                 'D': J + int(geom['x_train_cond'][c].shape[0]),
+                 'speaker': geom.get('speaker', 'rsa')}
     return cd
 
 
@@ -309,6 +357,10 @@ def gp_coherence_field(geom, c, length_scale, mu_0, output_scale, X_query,
     utterances, then the GP conditional mean at X_query given the training-block
     mode, squashed through the sigmoid. Returns (len(X_query),) numpy array.
     """
+    if int(geom['x_train_cond'][c].shape[0]) == 0:
+        # no training utterances (e.g. a baseline group): the ratings-free mode
+        # is the GP prior mean everywhere
+        return np.full(int(np.asarray(X_query).shape[0]), 1.0 / (1.0 + np.exp(-mu_0)))
     cd = _ratings_free_cond_data(geom)[c]
     _, y_hat, _ = laplace_log_Z(cd, length_scale, mu_0, output_scale, beta_speaker)
     y_tr = jnp.asarray(y_hat[geom['J']:])
@@ -326,10 +378,10 @@ def fit_link_shapes(responses_cond, pz1_cond):
     condition's pz1, then runs the interval-likelihood fit from model_jax.
     Returns (J, 4) [a_kl, b_kl, a_nkl, b_nkl], clipped to SHAPE_CLIP.
     """
-    responses_all = jnp.concatenate([responses_cond[c] for c in CONDITIONS], axis=0)
+    responses_all = jnp.concatenate([responses_cond[c] for c in responses_cond], axis=0)
     pz1_weights = jnp.concatenate(
         [jnp.tile(jnp.asarray(pz1_cond[c])[None, :], (int(responses_cond[c].shape[0]), 1))
-         for c in CONDITIONS], axis=0)                                   # (N_total, J)
+         for c in responses_cond], axis=0)                               # (N_total, J)
     shapes = np.asarray(fit_beta_mixtures_all_features(responses_all, pz1_weights))   # (J, 4)
     return np.clip(shapes, *SHAPE_CLIP)
 
@@ -358,6 +410,29 @@ def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_s
     return ll
 
 
+def conditional_ratings_log_lik(geom, responses_cond, length_scale, mu_0, output_scale,
+                                beta_speaker=BETA_SPEAKER):
+    """Summed log p(ratings | utterances, theta): Laplace log Z of the full posterior
+    minus the ratings-free log Z (GP prior + speaker only), per group, with the
+    linking shapes profiled at this theta.
+
+    Use this (not total_log_lik) to COMPARE models that condition on different
+    utterance sets (e.g. full vs literal-listener lesions): total_log_lik scores the
+    utterances as data too, so a model that drops utterances stops paying their
+    log p(u) terms and its log Z shifts by bookkeeping, not fit. Conditioning on
+    the utterances scores every model on the same ratings data.
+    """
+    _, _, cond_data = total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0,
+                                                output_scale, beta_speaker=beta_speaker,
+                                                return_shapes=True)
+    free = _ratings_free_cond_data(geom)
+    ll = 0.0
+    for c in cond_data:
+        ll += (laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)[0]
+               - laplace_log_Z(free[c], length_scale, mu_0, output_scale, beta_speaker)[0])
+    return ll
+
+
 # ---------------------------------------------------------------------------
 # VBMC over phi = [log_ls, mu_0, log_sigma]
 # ---------------------------------------------------------------------------
@@ -370,17 +445,56 @@ def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_s
 # the posterior.
 TARGET_NOISE = 1.0
 
-def log_prior_ls(log_ls):       return float(-0.5 * ((log_ls - np.log(0.5)) / 1.5) ** 2)
+# ---------------------------------------------------------------------------
+# Embedding-space profiles: the ls prior/box and the flat-ls convention are
+# calibrated to the pairwise-distance scale of the chosen embedding.
+#   2d   : UMAP-style projection. dists 0.003-0.78 (max=cloud diameter 0.78);
+#          LS_FLAT=10 ~ 12.8*dmax -> kernel constant to ~0.997.
+#   384d : unit-norm sentence embeddings. dists 0.43-1.19, concentrated
+#          (std/mean~0.11); prior centered near the median distance 0.91 scale;
+#          LS_FLAT=15 ~ 12.6*dmax matches the 2d null's flatness (~0.997).
+# mu_0 / sigma / beta priors are geometry-independent and shared across profiles.
+EMBED_PROFILES = {
+    '2d':   dict(ls_prior_center=0.5, ls_x0=0.3, ls_lb=0.03, ls_ub=4.0,
+                 ls_plb=0.08, ls_pub=2.5, ls_flat=10.0),
+    '384d': dict(ls_prior_center=0.7, ls_x0=0.7, ls_lb=0.2,  ls_ub=6.0,
+                 ls_plb=0.35, ls_pub=3.0, ls_flat=15.0),
+}
+EMBED   = '2d'
+LS_FLAT = EMBED_PROFILES[EMBED]['ls_flat']
+_LS_PRIOR_CENTER = EMBED_PROFILES[EMBED]['ls_prior_center']
+
+def log_prior_ls(log_ls):       return float(-0.5 * ((log_ls - np.log(_LS_PRIOR_CENTER)) / 1.5) ** 2)
 def log_prior_mu(mu_0):         return float(-0.5 * mu_0 ** 2)
 def log_prior_sigma(log_sigma): return float(-0.5 * ((log_sigma - np.log(1.5)) / 1.0) ** 2)
 
-# VBMC box for phi = [log_ls, mu_0, log_sigma]. ls bounds match the recovery
-# notebook; sigma is lognormal-ish around the previously-fixed value 1.5.
+# VBMC box for phi = [log_ls, mu_0, log_sigma]. ls entries follow the active
+# embed profile (see set_embed); sigma is lognormal-ish around the
+# previously-fixed value 1.5.
 X0  = np.array([np.log(0.3),   0.0, np.log(1.5)])
 LB  = np.array([np.log(0.03), -4.0, np.log(0.05)])
 UB  = np.array([np.log(4.0),   4.0, np.log(8.0)])
 PLB = np.array([np.log(0.08), -2.0, np.log(0.3)])
 PUB = np.array([np.log(2.5),   2.0, np.log(4.0)])
+
+
+def set_embed(embed):
+    """Switch the module to the given embedding space ('2d' or '384d').
+
+    Updates EMBED (the load_geometry default), LS_FLAT, the ls prior center,
+    and the ls coordinate of the 3-D and 4-D VBMC boxes IN PLACE (the 2-D and
+    pinned-ls boxes have no ls coordinate and need no update). Call BEFORE
+    load_geometry / any run_vbmc_* so geometry and priors stay consistent.
+    """
+    global EMBED, LS_FLAT, _LS_PRIOR_CENTER
+    p = EMBED_PROFILES[embed]
+    EMBED, LS_FLAT, _LS_PRIOR_CENTER = embed, p['ls_flat'], p['ls_prior_center']
+    for arr, key in [(X0, 'ls_x0'), (LB, 'ls_lb'), (UB, 'ls_ub'),
+                     (PLB, 'ls_plb'), (PUB, 'ls_pub')]:
+        arr[0] = np.log(p[key])
+    for arr, key in [(X0_4, 'ls_x0'), (LB_4, 'ls_lb'), (UB_4, 'ls_ub'),
+                     (PLB_4, 'ls_plb'), (PUB_4, 'ls_pub')]:
+        arr[0] = np.log(p[key])
 
 
 def make_log_joint(cond_data, counter=None, verbose=True):
