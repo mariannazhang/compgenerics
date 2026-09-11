@@ -50,7 +50,7 @@ H = 1.0 / 200.0             # half a slider bin -- nudges exact 0/1 responses in
 # "kind-linked" component (mean 0.8), nkl = low-mean (mean 0.2).
 DEFAULT_LINK_SHAPES = np.array([8.0, 2.0, 2.0, 8.0])
 
-CONDITIONS  = ['diet', 'personality', 'physical', 'heterogeneous']
+CONDITIONS  = ['physical', 'diet', 'personality', 'heterogeneous']
 CAT_OF_COND = {'diet': 'diet_preferences', 'personality': 'personality_behaviors', 'physical': 'physical'}
 CAT_SHORT   = {'diet_preferences': 'diet', 'personality_behaviors': 'personality', 'physical': 'physical'}
 
