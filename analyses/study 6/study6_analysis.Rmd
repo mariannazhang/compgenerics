@@ -60,7 +60,7 @@ format_p <- function(p) {
 # Study 6 methods (Jess)
 
 ```{r summary-statistics-6, opts.label='analysis'}
-study6 <- read.csv(here("data", "full_study6.csv"))
+study6 <- read.csv(here("data", "pilots", "full_study6.csv"))
 
 # report n
 n6 <- nrow(study6)
@@ -101,7 +101,7 @@ prop.table(sex6*100)
 # Study 6 analysis (Jess)
 ```{r, opts.label='analysis'}
 ##induction task
-s6_ind_long <- read.csv(here("data", "ind_ordered_s6.csv")) 
+s6_ind_long <- read.csv(here("data", "pilots", "ind_ordered_s6.csv")) 
 s6_ind_long$trial <- as.factor(s6_ind_long$trial)
 
 #set levels

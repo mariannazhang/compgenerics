@@ -68,17 +68,17 @@ Nonetheless, the proportionality effect became marginal after controlling for wh
 ```{r data-import}
 # import Qualtrics data
 data_raw_headers <- 
-  read_csv(here("data", "study8.csv"), 
+  read_csv(here("data", "pilots", "study8.csv"), 
            n_max = 2) 
   
 data_raw <- 
-  read_csv(here("data", "study8.csv"),
+  read_csv(here("data", "pilots", "study8.csv"),
            col_names = data_raw_headers %>% names(),
            skip = 3) 
 
 # import demographic data from Prolific
 data_dem_raw <-
-  read_csv(here("data", "study8_dem.csv"))
+  read_csv(here("data", "pilots", "study8_dem.csv"))
 ```
 
 ```{r data-cleaning}
