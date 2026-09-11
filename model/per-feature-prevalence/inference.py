@@ -22,7 +22,6 @@ Import this module BEFORE importing jax elsewhere so the platform/x64 env vars
 take effect (or set them yourself first).
 """
 import os
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("JAX_ENABLE_X64", "1")   # float64 for stable log-det / Cholesky
 
 import csv
@@ -68,27 +67,22 @@ CSV_TO_FEATURE = {
 # ---------------------------------------------------------------------------
 # Geometry + data loading
 # ---------------------------------------------------------------------------
-def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl', embed=None):
+def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl'):
     """Feature embeddings: per-condition trained regions + the shared test set.
 
-    embed: '2d' (UMAP-style projection, cols x_2d/y_2d) or '384d' (unit-norm
-    sentence embeddings, col embedding_384d). Defaults to the module-level EMBED
-    set via set_embed(). The GP machinery is dimension-agnostic; only the
-    field-contour visualizations require '2d'.
+    Uses the 2d UMAP-style projection (cols x_2d/y_2d). The GP machinery is
+    dimension-agnostic, but we fix the 2d embedding here (384d was removed).
 
     Returns a dict with x_train_cond / u_train_cond (per condition), x_test (J,D),
     test_feature_names, test_trait, J, and embed.
     """
-    embed = embed or EMBED
     with open(features_pkl_path, 'rb') as f:
         df = pkl.load(f)
     feat_idx = df.set_index('feature')
     train_df = df[df.split == 'train']
 
     def coords(sub_df):
-        if embed == '2d':
-            return jnp.array(sub_df[['x_2d', 'y_2d']].values)
-        return jnp.array(np.stack(sub_df['embedding_384d'].values))
+        return jnp.array(sub_df[['x_2d', 'y_2d']].values)
 
     x_train_cond, u_train_cond, train_names_cond = {}, {}, {}
     for c in CONDITIONS:
@@ -104,7 +98,7 @@ def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl', e
     return {'x_train_cond': x_train_cond, 'u_train_cond': u_train_cond,
             'train_names_cond': train_names_cond,
             'x_test': x_test, 'test_feature_names': test_feature_names,
-            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': embed}
+            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d'}
 
 
 def load_responses(csv_path, clip_interior=True):
@@ -446,30 +440,20 @@ def conditional_ratings_log_lik(geom, responses_cond, length_scale, mu_0, output
 TARGET_NOISE = 1.0
 
 # ---------------------------------------------------------------------------
-# Embedding-space profiles: the ls prior/box and the flat-ls convention are
-# calibrated to the pairwise-distance scale of the chosen embedding.
-#   2d   : UMAP-style projection. dists 0.003-0.78 (max=cloud diameter 0.78);
-#          LS_FLAT=10 ~ 12.8*dmax -> kernel constant to ~0.997.
-#   384d : unit-norm sentence embeddings. dists 0.43-1.19, concentrated
-#          (std/mean~0.11); prior centered near the median distance 0.91 scale;
-#          LS_FLAT=15 ~ 12.6*dmax matches the 2d null's flatness (~0.997).
-# mu_0 / sigma / beta priors are geometry-independent and shared across profiles.
-EMBED_PROFILES = {
-    '2d':   dict(ls_prior_center=0.5, ls_x0=0.3, ls_lb=0.03, ls_ub=4.0,
-                 ls_plb=0.08, ls_pub=2.5, ls_flat=10.0),
-    '384d': dict(ls_prior_center=0.7, ls_x0=0.7, ls_lb=0.2,  ls_ub=6.0,
-                 ls_plb=0.35, ls_pub=3.0, ls_flat=15.0),
-}
-EMBED   = '2d'
-LS_FLAT = EMBED_PROFILES[EMBED]['ls_flat']
-_LS_PRIOR_CENTER = EMBED_PROFILES[EMBED]['ls_prior_center']
+# Length-scale prior/box and the flat-ls convention, calibrated to the 2d
+# embedding's pairwise-distance scale: UMAP-style projection, dists 0.003-0.78
+# (max = cloud diameter 0.78); LS_FLAT=10 ~ 12.8*dmax -> kernel constant to
+# ~0.997 (the null / distance-blind convention). mu_0 / sigma / beta priors are
+# geometry-independent. (The model works in any dimension, but we fix the 2d
+# embedding here; 384d support was removed.)
+LS_FLAT = 10.0
+_LS_PRIOR_CENTER = 0.5
 
 def log_prior_ls(log_ls):       return float(-0.5 * ((log_ls - np.log(_LS_PRIOR_CENTER)) / 1.5) ** 2)
 def log_prior_mu(mu_0):         return float(-0.5 * mu_0 ** 2)
 def log_prior_sigma(log_sigma): return float(-0.5 * ((log_sigma - np.log(1.5)) / 1.0) ** 2)
 
-# VBMC box for phi = [log_ls, mu_0, log_sigma]. ls entries follow the active
-# embed profile (see set_embed); sigma is lognormal-ish around the
+# VBMC box for phi = [log_ls, mu_0, log_sigma]; sigma is lognormal-ish around the
 # previously-fixed value 1.5.
 X0  = np.array([np.log(0.3),   0.0, np.log(1.5)])
 LB  = np.array([np.log(0.03), -4.0, np.log(0.05)])
@@ -478,70 +462,33 @@ PLB = np.array([np.log(0.08), -2.0, np.log(0.3)])
 PUB = np.array([np.log(2.5),   2.0, np.log(4.0)])
 
 
-def set_embed(embed):
-    """Switch the module to the given embedding space ('2d' or '384d').
+# ---------------------------------------------------------------------------
+# Speaker-rationality (beta) prior + the 4-D VBMC box
+# ---------------------------------------------------------------------------
+# beta (RSA speaker rationality) is fit by default as a 4th coordinate,
+# phi = [log_ls, mu_0, log_sigma, log_beta], on the log scale with a
+# lognormal-ish prior around the design value BETA_SPEAKER=3. The base box X0..PUB
+# holds [log_ls, mu_0, log_sigma]; X0_B..PUB_B extends it with the beta coordinate.
+# Two independent switches collapse the box at fit time (see build_log_joint):
+#   fit_beta=False  -> drop the log_beta coordinate (beta held at BETA_SPEAKER, or
+#                      structurally absent, e.g. a literal listener with no speaker
+#                      or a model with no utterances); beta_samples records the
+#                      value it was pinned to (NaN when the model has no speaker).
+#   ls_fixed=<val>  -> drop the log_ls coordinate (null / distance-blind model);
+#                      ls_samples is filled with the pinned constant.
+def log_prior_beta(log_beta):   return float(-0.5 * ((log_beta - np.log(3.0)) / 1.0) ** 2)
 
-    Updates EMBED (the load_geometry default), LS_FLAT, the ls prior center,
-    and the ls coordinate of the 3-D and 4-D VBMC boxes IN PLACE (the 2-D and
-    pinned-ls boxes have no ls coordinate and need no update). Call BEFORE
-    load_geometry / any run_vbmc_* so geometry and priors stay consistent.
-    """
-    global EMBED, LS_FLAT, _LS_PRIOR_CENTER
-    p = EMBED_PROFILES[embed]
-    EMBED, LS_FLAT, _LS_PRIOR_CENTER = embed, p['ls_flat'], p['ls_prior_center']
-    for arr, key in [(X0, 'ls_x0'), (LB, 'ls_lb'), (UB, 'ls_ub'),
-                     (PLB, 'ls_plb'), (PUB, 'ls_pub')]:
-        arr[0] = np.log(p[key])
-    for arr, key in [(X0_4, 'ls_x0'), (LB_4, 'ls_lb'), (UB_4, 'ls_ub'),
-                     (PLB_4, 'ls_plb'), (PUB_4, 'ls_pub')]:
-        arr[0] = np.log(p[key])
-
-
-def make_log_joint(cond_data, counter=None, verbose=True):
-    """Full 3-D objective. phi = [log_ls, mu_0, log_sigma]; linking shapes fixed.
-    Returns (value, noise_std) because VBMC is run with specify_target_noise=True."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        log_ls, mu_0, log_sigma = float(phi[0]), float(phi[1]), float(phi[2])
-        ls, sigma = float(np.exp(log_ls)), float(np.exp(log_sigma))
-        counter[0] += 1
-        ll = total_log_lik(cond_data, ls, mu_0, sigma)
-        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
-        val = ll + lp
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
-                  f"log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
-
-
-def make_log_joint_free_shapes(geom, responses_cond, n_alt=1, counter=None, verbose=True):
-    """3-D objective with the linking shapes PROFILED OUT at every eval.
-
-    phi = [log_ls, mu_0, log_sigma]; per eval the shared per-feature shapes are
-    re-fit via total_log_lik_free_shapes (deterministic in phi)."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        log_ls, mu_0, log_sigma = float(phi[0]), float(phi[1]), float(phi[2])
-        ls, sigma = float(np.exp(log_ls)), float(np.exp(log_sigma))
-        counter[0] += 1
-        ll = total_log_lik_free_shapes(geom, responses_cond, ls, mu_0, sigma, n_alt=n_alt)
-        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
-        val = ll + lp
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
-                  f"log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
+X0_B  = np.append(X0,  np.log(3.0))
+LB_B  = np.append(LB,  np.log(0.2))
+UB_B  = np.append(UB,  np.log(30.0))
+PLB_B = np.append(PLB, np.log(1.0))
+PUB_B = np.append(PUB, np.log(10.0))
 
 
 def _patch_pyvbmc_varg_squeeze():
-    """pyVBMC numpy-compat fix (same as the MCMC notebooks): _gp_log_joint can
-    return varG as a (1,1) array, which propagates into varF and crashes
-    _eval_full_elcbo with 'setting an array element with a sequence' on longer
-    runs. Squeeze it to a scalar. Idempotent."""
+    """pyVBMC numpy-compat fix: _gp_log_joint can return varG as a (1,1) array,
+    which propagates into varF and crashes _eval_full_elcbo with 'setting an array
+    element with a sequence' on longer runs. Squeeze it to a scalar. Idempotent."""
     import pyvbmc.vbmc.variational_optimization as _vopt
     if getattr(_vopt._gp_log_joint, "_varg_squeeze_patch", False):
         return
@@ -554,215 +501,116 @@ def _patch_pyvbmc_varg_squeeze():
     _vopt._gp_log_joint = _patched
 
 
-def _run_vbmc_on(log_joint, max_evals, x0, n_posterior_samples):
-    """Shared pyVBMC driver: optimize log_joint over the module's phi box."""
-    from pyvbmc import VBMC
-    import time
-    _patch_pyvbmc_varg_squeeze()
-    t0 = time.time()
-    vbmc = VBMC(log_joint,
-                X0 if x0 is None else np.asarray(x0, dtype=float),
-                LB, UB, PLB, PUB,
-                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
-    result, stats = vbmc.optimize()
-    phi_samples, _ = result.sample(n_posterior_samples)
-    return {
-        'ls_samples':    np.exp(phi_samples[:, 0]),
-        'mu0_samples':   phi_samples[:, 1],
-        'sigma_samples': np.exp(phi_samples[:, 2]),
-        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
-        'convergence_status': str(stats['convergence_status']),
-        'runtime_s': time.time() - t0,
-        'result': result, 'stats': stats,
-    }
+# ---------------------------------------------------------------------------
+# One parametrized VBMC objective + driver.
+#
+# The phi vector is assembled from up to four coordinates in this fixed order:
+#     [log_ls (if ls_fixed is None), mu_0, log_sigma, log_beta (if fit_beta)]
+# so mu_0/log_sigma are always present, while the ls and beta coordinates are
+# switched in or out. build_log_joint returns (log_joint, coord_spec); the driver
+# uses coord_spec to slice the posterior samples back into natural-unit arrays.
+# ---------------------------------------------------------------------------
+def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
+                    fit_beta=True, free_shapes=True, n_alt=1, counter=None, verbose=True):
+    """Assemble the VBMC log-joint objective and its coordinate spec.
 
+    free_shapes=True  -> geom_or_cond_data is `geom`, `responses_cond` is required,
+                         and the per-feature Beta-mixture linking shapes are PROFILED
+                         OUT (re-fit) at every theta (via total_log_lik_free_shapes).
+    free_shapes=False -> geom_or_cond_data is `cond_data` with the linking shapes
+                         baked in; `responses_cond` is ignored (via total_log_lik).
 
-def run_vbmc(cond_data, max_evals=150, x0=None, n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 3-D VBMC posterior over (length_scale, mu_0, output_scale) with
-    FIXED linking shapes (baked into cond_data).
+    ls_fixed None -> length scale is a fitted coordinate; a float pins it (null model).
+    fit_beta      -> whether the RSA speaker rationality beta is a fitted coordinate;
+                     when False it is held at BETA_SPEAKER (its design value).
 
-    Returns a dict with posterior samples in NATURAL units (ls_samples,
-    mu0_samples, sigma_samples), plus elbo / func_count / convergence_status
-    and the raw (result, stats) pyVBMC objects.
+    Returns (log_joint, coord_spec) where coord_spec is a dict with the box arrays
+    (x0, lb, ub, plb, pub) and the flags, used by _run_vbmc to slice samples.
     """
-    return _run_vbmc_on(make_log_joint(cond_data, verbose=verbose),
-                        max_evals, x0, n_posterior_samples)
-
-
-def run_vbmc_free_shapes(geom, responses_cond, max_evals=150, n_alt=1, x0=None,
-                         n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 3-D VBMC posterior over (length_scale, mu_0, output_scale) with the
-    linking shapes PROFILED OUT (re-fit per feature at every theta evaluation).
-
-    Same return format as run_vbmc()."""
-    return _run_vbmc_on(make_log_joint_free_shapes(geom, responses_cond, n_alt=n_alt, verbose=verbose),
-                        max_evals, x0, n_posterior_samples)
-
-
-# ---------------------------------------------------------------------------
-# 2-D VBMC with the length scale PINNED (null / distance-blind model)
-# ---------------------------------------------------------------------------
-# phi2 = [mu_0, log_sigma]: the 3-D box minus the length-scale coordinate. The
-# pinned ls may sit far outside the 3-D ls box (e.g. 10 >> the cloud diameter,
-# where the kernel is effectively constant); its prior term is a constant and
-# is OMITTED, so log-joint values are not directly comparable to the 3-D fit's
-# (compare summed log Z instead).
-X0_2, LB_2, UB_2, PLB_2, PUB_2 = X0[1:], LB[1:], UB[1:], PLB[1:], PUB[1:]
-
-
-def make_log_joint_fixed_ls(cond_data, ls_fixed, counter=None, verbose=True):
-    """2-D objective at pinned length scale. phi2 = [mu_0, log_sigma]; linking shapes fixed."""
     counter = counter if counter is not None else [0]
-    def log_joint(phi):
+    fit_ls = ls_fixed is None
+
+    # ---- assemble the box for the active coordinates --------------------
+    # order: [log_ls?, mu_0, log_sigma, log_beta?]
+    base_x0, base_lb, base_ub, base_plb, base_pub = X0_B, LB_B, UB_B, PLB_B, PUB_B
+    #                idx: [0=log_ls, 1=mu_0, 2=log_sigma, 3=log_beta]
+    keep = ([0] if fit_ls else []) + [1, 2] + ([3] if fit_beta else [])
+    x0  = base_x0[keep].astype(float)
+    lb, ub, plb, pub = base_lb[keep], base_ub[keep], base_plb[keep], base_pub[keep]
+    coord_spec = dict(fit_ls=fit_ls, fit_beta=fit_beta, ls_fixed=ls_fixed,
+                      x0=x0, lb=lb, ub=ub, plb=plb, pub=pub)
+
+    def _unpack(phi):
+        """phi (active coords) -> (ls, mu_0, sigma, beta) in natural units."""
         phi = np.asarray(phi).ravel()
-        mu_0, log_sigma = float(phi[0]), float(phi[1])
-        sigma = float(np.exp(log_sigma))
-        counter[0] += 1
-        ll = total_log_lik(cond_data, float(ls_fixed), mu_0, sigma)
-        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
-                  f"sigma={sigma:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
+        i = 0
+        if fit_ls:
+            ls = float(np.exp(phi[i])); i += 1
+        else:
+            ls = float(ls_fixed)
+        mu_0 = float(phi[i]); i += 1
+        sigma = float(np.exp(phi[i])); i += 1
+        beta = float(np.exp(phi[i])) if fit_beta else float(BETA_SPEAKER)
+        return ls, mu_0, sigma, beta
 
-
-def make_log_joint_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, n_alt=1,
-                                        counter=None, verbose=True):
-    """2-D objective at pinned length scale with the linking shapes PROFILED OUT per eval."""
-    counter = counter if counter is not None else [0]
     def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        mu_0, log_sigma = float(phi[0]), float(phi[1])
-        sigma = float(np.exp(log_sigma))
+        ls, mu_0, sigma, beta = _unpack(phi)
         counter[0] += 1
-        ll = total_log_lik_free_shapes(geom, responses_cond, float(ls_fixed), mu_0, sigma, n_alt=n_alt)
-        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma)
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
-                  f"sigma={sigma:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
-
-
-def _run_vbmc_on_2d(log_joint, ls_fixed, max_evals, x0, n_posterior_samples):
-    """pyVBMC driver over the 2-D phi2 box; ls_samples is filled with the pinned
-    constant so the return format (and saved .npz) matches the 3-D fits."""
-    from pyvbmc import VBMC
-    import time
-    _patch_pyvbmc_varg_squeeze()
-    t0 = time.time()
-    vbmc = VBMC(log_joint,
-                X0_2 if x0 is None else np.asarray(x0, dtype=float),
-                LB_2, UB_2, PLB_2, PUB_2,
-                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
-    result, stats = vbmc.optimize()
-    phi_samples, _ = result.sample(n_posterior_samples)
-    return {
-        'ls_samples':    np.full(phi_samples.shape[0], float(ls_fixed)),
-        'mu0_samples':   phi_samples[:, 0],
-        'sigma_samples': np.exp(phi_samples[:, 1]),
-        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
-        'convergence_status': str(stats['convergence_status']),
-        'runtime_s': time.time() - t0,
-        'result': result, 'stats': stats,
-    }
-
-
-def run_vbmc_fixed_ls(cond_data, ls_fixed, max_evals=150, x0=None,
-                      n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 2-D VBMC posterior over (mu_0, output_scale) at a PINNED length
-    scale, with FIXED linking shapes (baked into cond_data).
-
-    Same return format as run_vbmc(); ls_samples is the pinned constant."""
-    return _run_vbmc_on_2d(make_log_joint_fixed_ls(cond_data, ls_fixed, verbose=verbose),
-                           ls_fixed, max_evals, x0, n_posterior_samples)
-
-
-def run_vbmc_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, max_evals=150, n_alt=1,
-                                  x0=None, n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 2-D VBMC posterior over (mu_0, output_scale) at a PINNED length
-    scale, with the linking shapes PROFILED OUT per evaluation.
-
-    Same return format as run_vbmc(); ls_samples is the pinned constant."""
-    return _run_vbmc_on_2d(
-        make_log_joint_free_shapes_fixed_ls(geom, responses_cond, ls_fixed, n_alt=n_alt, verbose=verbose),
-        ls_fixed, max_evals, x0, n_posterior_samples)
-
-
-# ---------------------------------------------------------------------------
-# 4-D VBMC with the speaker rationality INFERRED
-# ---------------------------------------------------------------------------
-# phi4 = [log_ls, mu_0, log_sigma, log_beta]: the 3-D box extended with the RSA
-# speaker rationality beta (elsewhere fixed by design at BETA_SPEAKER=3).
-# beta > 0 -> inferred on the log scale, lognormal-ish prior around the design
-# value. Note beta is informed only by the training utterances (one generic per
-# trained feature per condition), so expect trade-offs with mu_0 and sigma.
-def log_prior_beta(log_beta):   return float(-0.5 * ((log_beta - np.log(3.0)) / 1.0) ** 2)
-
-X0_4  = np.append(X0,  np.log(3.0))
-LB_4  = np.append(LB,  np.log(0.2))
-UB_4  = np.append(UB,  np.log(30.0))
-PLB_4 = np.append(PLB, np.log(1.0))
-PUB_4 = np.append(PUB, np.log(10.0))
-
-
-def make_log_joint_beta(cond_data, counter=None, verbose=True):
-    """4-D objective. phi4 = [log_ls, mu_0, log_sigma, log_beta]; linking shapes fixed."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        log_ls, mu_0, log_sigma, log_beta = (float(phi[0]), float(phi[1]),
-                                             float(phi[2]), float(phi[3]))
-        ls, sigma, beta = float(np.exp(log_ls)), float(np.exp(log_sigma)), float(np.exp(log_beta))
-        counter[0] += 1
-        ll = total_log_lik(cond_data, ls, mu_0, sigma, beta_speaker=beta)
-        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
+        if free_shapes:
+            ll = total_log_lik_free_shapes(geom_or_cond_data, responses_cond, ls, mu_0,
+                                           sigma, n_alt=n_alt, beta_speaker=beta)
+        else:
+            ll = total_log_lik(geom_or_cond_data, ls, mu_0, sigma, beta_speaker=beta)
+        lp = log_prior_mu(mu_0) + log_prior_sigma(np.log(sigma))
+        if fit_ls:
+            lp += log_prior_ls(np.log(ls))
+        if fit_beta:
+            lp += log_prior_beta(np.log(beta))
         val = ll + lp
         if verbose:
-            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
-                  f"beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
+            ls_tag = f"{ls:.3f}" + ("" if fit_ls else " (pinned)")
+            beta_tag = f"  beta={beta:.3f}" + ("" if fit_beta else " (fixed)")
+            print(f"  eval {counter[0]:3d}: ls={ls_tag}  mu_0={mu_0:+.3f}  "
+                  f"sigma={sigma:.3f}{beta_tag}  log_lik={ll:.1f}  log_joint={val:.1f}")
         return val, TARGET_NOISE
-    return log_joint
+
+    return log_joint, coord_spec
 
 
-def make_log_joint_free_shapes_beta(geom, responses_cond, n_alt=1, counter=None, verbose=True):
-    """4-D objective with the linking shapes PROFILED OUT at every eval."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        log_ls, mu_0, log_sigma, log_beta = (float(phi[0]), float(phi[1]),
-                                             float(phi[2]), float(phi[3]))
-        ls, sigma, beta = float(np.exp(log_ls)), float(np.exp(log_sigma)), float(np.exp(log_beta))
-        counter[0] += 1
-        ll = total_log_lik_free_shapes(geom, responses_cond, ls, mu_0, sigma,
-                                       n_alt=n_alt, beta_speaker=beta)
-        lp = log_prior_ls(log_ls) + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
-        val = ll + lp
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={ls:.3f}  mu_0={mu_0:+.3f}  sigma={sigma:.3f}  "
-                  f"beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
-
-
-def _run_vbmc_on_4d(log_joint, max_evals, x0, n_posterior_samples):
-    """pyVBMC driver over the 4-D phi4 box; adds beta_samples to the return dict."""
+def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples):
+    """pyVBMC driver over the active-coordinate box in coord_spec. Slices the
+    posterior samples back into natural-unit arrays, filling pinned/fixed
+    coordinates with their constants so the return dict (and saved .npz) has the
+    same keys regardless of which coordinates were fitted."""
     from pyvbmc import VBMC
     import time
     _patch_pyvbmc_varg_squeeze()
     t0 = time.time()
-    vbmc = VBMC(log_joint,
-                X0_4 if x0 is None else np.asarray(x0, dtype=float),
-                LB_4, UB_4, PLB_4, PUB_4,
+    x0 = coord_spec['x0'] if x0 is None else np.asarray(x0, dtype=float)
+    vbmc = VBMC(log_joint, x0,
+                coord_spec['lb'], coord_spec['ub'], coord_spec['plb'], coord_spec['pub'],
                 options={'specify_target_noise': True, 'max_fun_evals': max_evals})
     result, stats = vbmc.optimize()
     phi_samples, _ = result.sample(n_posterior_samples)
+    n = phi_samples.shape[0]
+
+    i = 0
+    if coord_spec['fit_ls']:
+        ls_samples = np.exp(phi_samples[:, i]); i += 1
+    else:
+        ls_samples = np.full(n, float(coord_spec['ls_fixed']))
+    mu0_samples = phi_samples[:, i]; i += 1
+    sigma_samples = np.exp(phi_samples[:, i]); i += 1
+    if coord_spec['fit_beta']:
+        beta_samples = np.exp(phi_samples[:, i])
+    else:
+        # beta held at its design value; callers that model NO speaker (e.g. the
+        # aligned literal listener) overwrite this with NaN after the fit.
+        beta_samples = np.full(n, float(BETA_SPEAKER))
+
     return {
-        'ls_samples':    np.exp(phi_samples[:, 0]),
-        'mu0_samples':   phi_samples[:, 1],
-        'sigma_samples': np.exp(phi_samples[:, 2]),
-        'beta_samples':  np.exp(phi_samples[:, 3]),
+        'ls_samples': ls_samples, 'mu0_samples': mu0_samples,
+        'sigma_samples': sigma_samples, 'beta_samples': beta_samples,
         'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
         'convergence_status': str(stats['convergence_status']),
         'runtime_s': time.time() - t0,
@@ -770,114 +618,27 @@ def _run_vbmc_on_4d(log_joint, max_evals, x0, n_posterior_samples):
     }
 
 
-def run_vbmc_beta(cond_data, max_evals=200, x0=None, n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 4-D VBMC posterior over (length_scale, mu_0, output_scale, beta_speaker)
-    with FIXED linking shapes (baked into cond_data).
+def run_vbmc(geom, responses_cond=None, *, ls_fixed=None, fit_beta=True,
+             free_shapes=True, max_evals=None, n_alt=1, x0=None,
+             n_posterior_samples=int(1e4), verbose=True):
+    """Fit the VBMC posterior over the GP hyperparameters, with beta fitted by default.
 
-    Same return format as run_vbmc() plus beta_samples."""
-    return _run_vbmc_on_4d(make_log_joint_beta(cond_data, verbose=verbose),
-                           max_evals, x0, n_posterior_samples)
+    Coordinates fitted (in order): length_scale (unless ls_fixed pins it), mu_0,
+    output_scale, and speaker rationality beta (unless fit_beta=False). The
+    per-feature Beta-mixture linking shapes are profiled out per evaluation when
+    free_shapes=True (pass `geom` + `responses_cond`); with free_shapes=False pass
+    a `cond_data` dict with the shapes baked in as the first argument.
 
-
-def run_vbmc_free_shapes_beta(geom, responses_cond, max_evals=200, n_alt=1, x0=None,
-                              n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 4-D VBMC posterior over (length_scale, mu_0, output_scale, beta_speaker)
-    with the linking shapes PROFILED OUT per evaluation.
-
-    Same return format as run_vbmc() plus beta_samples."""
-    return _run_vbmc_on_4d(
-        make_log_joint_free_shapes_beta(geom, responses_cond, n_alt=n_alt, verbose=verbose),
-        max_evals, x0, n_posterior_samples)
-
-
-# ---------------------------------------------------------------------------
-# 3-D VBMC with length scale PINNED and speaker rationality INFERRED (null+beta)
-# ---------------------------------------------------------------------------
-# phi3b = [mu_0, log_sigma, log_beta]: the 4-D box minus the length-scale
-# coordinate. The null (distance-blind) model that also frees beta.
-X0_3B  = np.array([X0_4[1], X0_4[2], X0_4[3]])
-LB_3B  = np.array([LB_4[1], LB_4[2], LB_4[3]])
-UB_3B  = np.array([UB_4[1], UB_4[2], UB_4[3]])
-PLB_3B = np.array([PLB_4[1], PLB_4[2], PLB_4[3]])
-PUB_3B = np.array([PUB_4[1], PUB_4[2], PUB_4[3]])
-
-
-def make_log_joint_fixed_ls_beta(cond_data, ls_fixed, counter=None, verbose=True):
-    """3-D objective at pinned length scale. phi3b = [mu_0, log_sigma, log_beta]; shapes fixed."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        mu_0, log_sigma, log_beta = float(phi[0]), float(phi[1]), float(phi[2])
-        sigma, beta = float(np.exp(log_sigma)), float(np.exp(log_beta))
-        counter[0] += 1
-        ll = total_log_lik(cond_data, float(ls_fixed), mu_0, sigma, beta_speaker=beta)
-        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
-                  f"sigma={sigma:.3f}  beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
-
-
-def make_log_joint_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, n_alt=1,
-                                             counter=None, verbose=True):
-    """3-D objective at pinned length scale with the linking shapes PROFILED OUT per eval."""
-    counter = counter if counter is not None else [0]
-    def log_joint(phi):
-        phi = np.asarray(phi).ravel()
-        mu_0, log_sigma, log_beta = float(phi[0]), float(phi[1]), float(phi[2])
-        sigma, beta = float(np.exp(log_sigma)), float(np.exp(log_beta))
-        counter[0] += 1
-        ll = total_log_lik_free_shapes(geom, responses_cond, float(ls_fixed), mu_0, sigma,
-                                       n_alt=n_alt, beta_speaker=beta)
-        val = ll + log_prior_mu(mu_0) + log_prior_sigma(log_sigma) + log_prior_beta(log_beta)
-        if verbose:
-            print(f"  eval {counter[0]:3d}: ls={float(ls_fixed):.3f} (pinned)  mu_0={mu_0:+.3f}  "
-                  f"sigma={sigma:.3f}  beta={beta:.3f}  log_lik={ll:.1f}  log_joint={val:.1f}")
-        return val, TARGET_NOISE
-    return log_joint
-
-
-def _run_vbmc_on_3d_beta(log_joint, ls_fixed, max_evals, x0, n_posterior_samples):
-    """pyVBMC driver over the 3-D phi3b box; ls_samples is the pinned constant, plus beta_samples."""
-    from pyvbmc import VBMC
-    import time
-    _patch_pyvbmc_varg_squeeze()
-    t0 = time.time()
-    vbmc = VBMC(log_joint,
-                X0_3B if x0 is None else np.asarray(x0, dtype=float),
-                LB_3B, UB_3B, PLB_3B, PUB_3B,
-                options={'specify_target_noise': True, 'max_fun_evals': max_evals})
-    result, stats = vbmc.optimize()
-    phi_samples, _ = result.sample(n_posterior_samples)
-    return {
-        'ls_samples':    np.full(phi_samples.shape[0], float(ls_fixed)),
-        'mu0_samples':   phi_samples[:, 0],
-        'sigma_samples': np.exp(phi_samples[:, 1]),
-        'beta_samples':  np.exp(phi_samples[:, 2]),
-        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
-        'convergence_status': str(stats['convergence_status']),
-        'runtime_s': time.time() - t0,
-        'result': result, 'stats': stats,
-    }
-
-
-def run_vbmc_fixed_ls_beta(cond_data, ls_fixed, max_evals=200, x0=None,
-                           n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 3-D VBMC posterior over (mu_0, output_scale, beta_speaker) at a PINNED
-    length scale, with FIXED linking shapes (baked into cond_data).
-
-    Same return format as run_vbmc() plus beta_samples; ls_samples is the pinned constant."""
-    return _run_vbmc_on_3d_beta(make_log_joint_fixed_ls_beta(cond_data, ls_fixed, verbose=verbose),
-                                ls_fixed, max_evals, x0, n_posterior_samples)
-
-
-def run_vbmc_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, max_evals=200, n_alt=1,
-                                       x0=None, n_posterior_samples=int(1e4), verbose=True):
-    """Fit the 3-D VBMC posterior over (mu_0, output_scale, beta_speaker) at a PINNED
-    length scale, with the linking shapes PROFILED OUT per evaluation.
-
-    Same return format as run_vbmc() plus beta_samples; ls_samples is the pinned constant."""
-    return _run_vbmc_on_3d_beta(
-        make_log_joint_free_shapes_fixed_ls_beta(geom, responses_cond, ls_fixed, n_alt=n_alt, verbose=verbose),
-        ls_fixed, max_evals, x0, n_posterior_samples)
+    Returns a dict with posterior samples in NATURAL units — ls_samples,
+    mu0_samples, sigma_samples, beta_samples (always present: fitted, or filled
+    with the pinned/design constant) — plus elbo / func_count /
+    convergence_status / runtime_s and the raw (result, stats) pyVBMC objects.
+    Pinned length scale -> ls_samples is that constant; unfitted beta ->
+    beta_samples is BETA_SPEAKER (overwrite with NaN if the model has no speaker).
+    """
+    if max_evals is None:
+        max_evals = 200 if fit_beta else 150
+    log_joint, coord_spec = build_log_joint(
+        geom, responses_cond, ls_fixed=ls_fixed, fit_beta=fit_beta,
+        free_shapes=free_shapes, n_alt=n_alt, verbose=verbose)
+    return _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples)
