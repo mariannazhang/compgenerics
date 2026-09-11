@@ -16,13 +16,14 @@
                                               # dropped (no likelihood contribution) ->
                                               # k=2 (mu_0, sigma), shapes still profiled.
 
-Append 'prereg' as a second argument to fit the preregistered replication data
-(load_study6_prereg) instead; caches then go to results/study6prereg-ablations/.
+Always fits the preregistered replication data (load_study6_prereg); caches go to
+results/study6prereg-ablations/.
 
 literal/null are 'fitted shapes + fitted beta' fits with the same widened beta bound as
-the main study-6/8 runs. Caches to results/study6-ablations/posterior-<which>.npz in the
-same npz format as the main notebooks' load_or_fit. Consumed by
-model-study6-ablations.ipynb (or its prereg clone).
+the main study-6/8 runs; literalsem/notransfer are beta-free (fit_beta=False) because
+their models have no speaker / no utterances. Caches to
+results/study6prereg-ablations/posterior-<which>.npz in the same npz format as the main
+notebooks' load_or_fit. Consumed by model-study6prereg-ablations.ipynb.
 """
 import os
 import sys
@@ -36,51 +37,47 @@ import jax.numpy as jnp
 
 which = sys.argv[1]
 assert which in ('literal', 'literalsem', 'null', 'notransfer')
-prereg = len(sys.argv) > 2 and sys.argv[2] == 'prereg'
 
 MAX_EVALS = 400
-RESULTS_DIR = os.path.join('results', 'study6prereg-ablations' if prereg else 'study6-ablations')
+RESULTS_DIR = os.path.join('results', 'study6prereg-ablations')
 os.makedirs(RESULTS_DIR, exist_ok=True)
-inf.set_embed('2d')
-# widened beta coordinate (same spec as the main study-6/8 fits); the 3-D
-# fixed-ls box is derived from the 4-D one at import time, so widen both
-inf.UB_4[3], inf.PUB_4[3] = np.log(1000.0), np.log(300.0)
-inf.UB_3B[2], inf.PUB_3B[2] = np.log(1000.0), np.log(300.0)
+# widened beta coordinate (same spec as the main study-6/8 fits); only used by
+# the fits that fit beta (literal / null), harmless for the beta-free ones.
+inf.UB_B[3], inf.PUB_B[3] = np.log(1000.0), np.log(300.0)
 
 path = os.path.join(RESULTS_DIR, f'posterior-{which}.npz')
 if os.path.exists(path):
     print(f'cache exists: {path} -- delete to refit')
     sys.exit(0)
 
-geom, responses_cond = s68.load_study6_prereg() if prereg else s68.load_study6()
+geom, responses_cond = s68.load_study6_prereg()
 if which == 'literal':
     # specifics carry zero evidence: the specific group keeps its ratings but
-    # loses its utterances (geometry identical to baseline)
+    # loses its utterances (geometry identical to baseline); beta still fitted
     geom['x_train_cond']['specific'] = jnp.zeros((0, 2))
     geom['u_train_cond']['specific'] = jnp.zeros(0, dtype=jnp.int32)
     geom['train_names_cond']['specific'] = []
-    fit = inf.run_vbmc_free_shapes_beta(geom, responses_cond, max_evals=MAX_EVALS)
+    fit = inf.run_vbmc(geom, responses_cond, max_evals=MAX_EVALS)
 elif which == 'literalsem':
     # aligned literal listener: all utterances kept, truth-conditional likelihood
     # (specifics are vacuously true -> zero evidence, by semantics not deletion);
-    # no speaker -> no beta -> 3-D fit over (ls, mu_0, sigma)
+    # no speaker -> beta absent (fit_beta=False), fit over (ls, mu_0, sigma)
     geom['speaker'] = 'literal'
-    fit = inf.run_vbmc_free_shapes(geom, responses_cond, max_evals=MAX_EVALS)
+    fit = inf.run_vbmc(geom, responses_cond, fit_beta=False, max_evals=MAX_EVALS)
     fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], np.nan)   # no beta in this model
 elif which == 'notransfer':
     # no channel from utterances to test features: every condition's utterance
-    # set is emptied, so predictions cannot differ by condition
+    # set is emptied, so predictions cannot differ by condition. ls pinned;
+    # no utterances -> beta never enters the likelihood (fit_beta=False)
     for c in list(geom['x_train_cond']):
         geom['x_train_cond'][c] = jnp.zeros((0, 2))
         geom['u_train_cond'][c] = jnp.zeros(0, dtype=jnp.int32)
         geom['train_names_cond'][c] = []
-    fit = inf.run_vbmc_free_shapes_fixed_ls(geom, responses_cond,
-                                            ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS)
-    # no utterances -> beta never enters the likelihood; record the design value
-    fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], inf.BETA_SPEAKER)
-else:
-    fit = inf.run_vbmc_free_shapes_fixed_ls_beta(geom, responses_cond,
-                                                 ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS)
+    fit = inf.run_vbmc(geom, responses_cond, ls_fixed=inf.LS_FLAT,
+                       fit_beta=False, max_evals=MAX_EVALS)
+    # beta_samples already filled with BETA_SPEAKER (the design value) by run_vbmc
+else:   # null: distance-blind (ls pinned), beta fitted
+    fit = inf.run_vbmc(geom, responses_cond, ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS)
 
 np.savez_compressed(
     path,

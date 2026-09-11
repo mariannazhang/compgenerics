@@ -6,10 +6,10 @@ SPECIFIC (u=1) as well as generic (u=0); the RSA speaker in model_jax already
 distinguishes them (MEANING_MATRIX), so specifics enter as pragmatic soft
 evidence against kind-linkedness.
 
-  - Study 6 (full_study6.csv): 3 groups. 'generic' = one generic per train
+  - Study 6 (study6_prereg.csv): 3 groups. 'generic' = one generic per train
     feature (16 utterances, u=0), 'specific' = one specific per train feature
     (u=1), 'baseline' = no statements.
-  - Study 8 (study8.csv): each participant gets their own random assignment of
+  - Study 8 (study8_prereg.csv): each participant gets their own random assignment of
     G/S over a subset of the train features (training_features_order aligned
     with training_structure). Participants are grouped by their exact
     feature->utterance configuration; each unique configuration is one
@@ -27,7 +27,7 @@ import pickle as pkl
 import numpy as np
 import pandas as pd
 
-from inference import H   # BEFORE any jax import: inference pins JAX_PLATFORMS=cpu
+from inference import H   # BEFORE any jax import: inference sets JAX_ENABLE_X64=1
 import jax.numpy as jnp
 
 SET1_PKL = '../features/set1_features_dataframe.pkl'
@@ -151,37 +151,13 @@ def _study6_geom(features_pkl_path):
     return geom
 
 
-def load_study6(csv_path='../../data/full_study6.csv', features_pkl_path=SET1_PKL):
-    """(geom, responses_cond) for the ORIGINAL study 6 (cleaned full_study6.csv),
-    groups ['generic', 'specific', 'baseline']. Rows whose 16 rating columns don't
-    all parse as numbers are dropped.
-    """
-    geom = _study6_geom(features_pkl_path)
-    U_OF_COND = STUDY6_U_OF_COND
-
-    data = pd.read_csv(csv_path)
-    rating_cols = list(STUDY6_COL_TO_FEATURE.keys())
-    # column order -> sorted test-feature order used by geom
-    col_of_feature = {v: k for k, v in STUDY6_COL_TO_FEATURE.items()}
-    ordered_cols = [col_of_feature[f] for f in geom['test_feature_names']]
-
-    R = data[ordered_cols].apply(pd.to_numeric, errors='coerce')
-    keep = R.notna().all(axis=1) & data['condition'].isin(U_OF_COND)
-    if (~keep).any():
-        print(f"load_study6: dropped {(~keep).sum()} of {len(data)} rows (unparseable ratings)")
-    data, R = data[keep], R[keep]
-
-    responses_cond = {c: jnp.array(_clip_ratings(R[data['condition'] == c].values))
-                      for c in U_OF_COND}
-    return geom, responses_cond
-
-
 def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_path=SET1_PKL):
     """(geom, responses_cond) for the PREREGISTERED study 6 replication.
 
-    Same design/geometry as load_study6, but the CSV is a raw Qualtrics export in
-    the study-8 format (cave_1..yellow_1 rating columns, 2 header rows) with the
-    preregistered exclusions: attention check == 100, AI == 'No', task check.
+    Design/geometry: 3 groups (generic/specific/baseline) over the set1 train/test
+    split (see _study6_geom). The CSV is a raw Qualtrics export in the study-8
+    format (cave_1..yellow_1 rating columns, 2 header rows) with the preregistered
+    exclusions: attention check == 100, AI == 'No', task check.
     """
     geom = _study6_geom(features_pkl_path)
 
@@ -210,8 +186,8 @@ def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_pat
 # ---------------------------------------------------------------------------
 # Study 8
 # ---------------------------------------------------------------------------
-def load_study8(csv_path='../../data/study8.csv', features_pkl_path=SET1_PKL):
-    """(geom, responses_cond, groups_df) for study 8.
+def load_study8(csv_path='../../data/study8_prereg.csv', features_pkl_path=SET1_PKL):
+    """(geom, responses_cond, groups_df) for study 8 (preregistered data).
 
     One likelihood group per unique feature->utterance configuration (all
     participants who saw exactly the same statements about the same features,
