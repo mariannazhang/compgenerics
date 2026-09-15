@@ -1,0 +1,211 @@
+% ============================================================================
+%  Graphical models for the per-feature-prevalence learner (GP coherence fn)
+%
+%  Requires (in the preamble of the document that \input{}s this file):
+%     \usepackage{tikz}
+%     \usetikzlibrary{bayesnet}   % provides \node[latent], \node[obs],
+%                                 % \edge, \factor, \plate, \gate
+%     \usetikzlibrary{fit,positioning,calc,arrows.meta}
+%
+%  Variable dictionary (diagram symbol  <->  math doc  <->  code)
+%  ----------------------------------------------------------------
+%     phi          coherence function        drawn from a GP; f(x) in code sense
+%     GP(mu0,K_th) prior over phi            rbf_kernel(X, ell, sigma), mean mu0
+%     theta        GP hyperparameters        (ell, mu0, sigma) [+ beta for RSA]
+%     x_i, x'      kind embeddings           X_all rows (2d / 384d)
+%     z_i  (== y_i) latent pseudocoherence   y_i, evaluation of phi at x_i
+%     z'   (== y')  test latent pseudocoh.   y'
+%     u_i          observed utterance        u_i  (p_u_given_y: RSA speaker, beta)
+%     p'           predicted prevalence      sigmoid(y') -> Beta-mixture shapes -> r
+% ============================================================================
+
+% ---------------------------------------------------------------------------
+%  Shared style
+% ---------------------------------------------------------------------------
+\tikzset{
+  gpnode/.style   = {draw, rounded corners, inner sep=4pt, fill=black!4,
+                     align=center, minimum height=1.9cm, minimum width=2.6cm},
+  hyper/.style    = {circle, draw, fill=black!12, inner sep=1.5pt,
+                     minimum size=6mm, font=\small},
+  det/.style      = {latent, diamond, aspect=1.3, inner sep=1pt}, % deterministic
+}
+
+
+% ===========================================================================
+%  FIGURE 1 : TRAINING
+%  The learner observes utterances u_1..u_n about training kinds and infers
+%  the posterior over the coherence function phi (a GP), i.e. over the latent
+%  pseudocoherences z_1..z_n.
+% ===========================================================================
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}[node distance=1.2cm and 1.1cm]
+
+    % --- GP prior over the coherence function phi ---
+    \node[gpnode] (gp) {$\phi \sim \mathcal{GP}\!\big(\mu_0,\,K_\theta\big)$\\[2pt]
+                        \footnotesize distribution over\\[-1pt]
+                        \footnotesize coherence functions};
+    % GP hyperparameters
+    \node[hyper, above left=0.5cm and 0.1cm of gp] (theta) {$\theta$};
+    \node[left=0.05cm of theta, font=\scriptsize, align=right]
+         (thlab) {$\ell,\mu_0,\sigma$\\(+ $\beta$)};
+
+    % --- kind embeddings (inputs the GP is indexed by) ---
+    % placed just below the GP box, with latents beneath them; the GP -> z
+    % edges are drawn explicitly so they do not clip through the x row.
+    \node[obs, below=1.5cm of gp, xshift=-2.2cm] (x1) {$x_1$};
+    \node[obs, right=of x1]      (x2)    {$x_2$};
+    \node[right=of x2]           (xdots) {$\cdots$};
+    \node[obs, right=of xdots]   (xn)    {$x_n$};
+
+    % --- latent pseudocoherences (evaluations of phi at training kinds) ---
+    \node[latent, below=0.9cm of x1] (z1) {$z_1$};
+    \node[latent, below=0.9cm of x2] (z2) {$z_2$};
+    \node[below=0.9cm of xdots]      (zdots) {$\cdots$};
+    \node[latent, below=0.9cm of xn] (zn) {$z_n$};
+
+    % --- observed utterances ---
+    \node[obs, below=of z1]    (u1)    {$u_1$};
+    \node[obs, below=of z2]    (u2)    {$u_2$};
+    \node[below=of zdots]      (udots) {$\cdots$};
+    \node[obs, below=of zn]    (un)    {$u_n$};
+
+    % --- edges ---
+    \edge {theta} {gp};
+    % GP indexes the coherence function at each kind embedding x_i, giving z_i;
+    % route GP -> z so the arrow arrives at z from the side of its x.
+    \draw[-{Latex[length=2mm]}] (gp.south) to[out=-90,in=140] (z1.north west);
+    \draw[-{Latex[length=2mm]}] (gp.south) to[out=-90,in=120] (z2.north west);
+    \draw[-{Latex[length=2mm]}] (gp.south) to[out=-90,in=40]  (zn.north east);
+    \edge {x1} {z1}; \edge {x2} {z2}; \edge {xn} {zn};
+    \edge {z1} {u1}; \edge {z2} {u2}; \edge {zn} {un};
+
+    % plate over the n training kinds
+    \node[draw, rounded corners, dashed, fit=(x1)(xn)(z1)(zn)(u1)(un),
+          inner sep=8pt, label={[font=\footnotesize]below right:kinds $i=1\dots n$}]
+         (plate) {};
+
+  \end{tikzpicture}
+  \caption{\textbf{Training.} The coherence function $\phi$ is a draw from a
+    Gaussian process with mean $\mu_0$ and kernel $K_\theta$ over kind
+    embeddings $x_i$. Its evaluations at the training kinds are the latent
+    pseudocoherences $z_1,\dots,z_n$, each of which generates an observed
+    utterance $u_i$ through the RSA speaker (rationality $\beta$). Observing
+    $u_1,\dots,u_n$ induces a posterior over $\phi$ (equivalently over
+    $z_1,\dots,z_n$) and over the hyperparameters $\theta$.}
+  \label{fig:gm-train}
+\end{figure}
+
+
+% ===========================================================================
+%  FIGURE 2 : TESTING
+%  Given the posterior over phi, predict the pseudocoherence z' at a held-out
+%  kind x', map it through the linking shapes to a prevalence rating p'.
+% ===========================================================================
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}[node distance=1.2cm and 1.1cm]
+
+    % posterior GP (same object, now conditioned on training)
+    \node[gpnode] (gp) {$\phi \mid \vec{u} \sim \mathcal{GP}$\\[2pt]
+                        \footnotesize posterior over\\[-1pt]
+                        \footnotesize coherence functions};
+    \node[hyper, above left=0.5cm and 0.1cm of gp] (theta) {$\theta$};
+
+    % held-out kind embedding + latent test pseudocoherence
+    \node[obs,    below=1.4cm of gp] (xp) {$x'$};
+    \node[latent, below=of xp]       (zp) {$z'$};
+
+    % deterministic sigmoid + Beta-mixture linking -> observed prevalence rating
+    \node[latent, below=of zp] (pp) {$p'$};
+
+    % linking-shapes factor annotation
+    \node[right=0.9cm of zp, font=\scriptsize, align=left] (linklab)
+         {$\mathrm{pz1}=\sigma(z')$\\Beta-mixture\\linking shapes $\phi^{kl},\phi^{nkl}$};
+
+    \edge {theta} {gp};
+    \edge {gp} {zp};
+    \edge {xp} {zp};
+    \edge {zp} {pp};
+    \draw[-{Latex[length=2mm]}, dashed] (linklab.west) -- (pp.east);
+
+  \end{tikzpicture}
+  \caption{\textbf{Testing.} Conditioned on the training utterances, the
+    posterior coherence function is queried at a held-out kind $x'$, yielding a
+    latent test pseudocoherence $z'$. Passing $z'$ through the sigmoid link
+    ($\mathrm{pz1}=\sigma(z')$) and the per-feature Beta-mixture linking shapes
+    produces the predicted prevalence $p'$, compared against human ratings.}
+  \label{fig:gm-test}
+\end{figure}
+
+
+% ===========================================================================
+%  FIGURE 3 : COMBINED train + test
+%  A single coherence function phi (one GP draw) generates both the training
+%  utterances and the test prevalence.
+% ===========================================================================
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}[node distance=1.15cm and 1.0cm]
+
+    % --- GP prior over phi, centered at top ---
+    \node[gpnode] (gp) {$\phi \sim \mathcal{GP}\!\big(\mu_0,\,K_\theta\big)$\\[2pt]
+                        \footnotesize distribution over coherence functions};
+    \node[hyper, left=0.7cm of gp] (theta) {$\theta$};
+    \node[left=0.05cm of theta, font=\scriptsize, align=right]
+         {$\ell,\mu_0,\sigma$\\(+ $\beta$)};
+
+    % --- training latent pseudocoherences ---
+    \node[latent, below=1.5cm of gp, xshift=-3.0cm] (z1) {$z_1$};
+    \node[latent, right=of z1]     (z2)    {$z_2$};
+    \node[right=of z2]             (zdots) {$\cdots$};
+    \node[latent, right=of zdots]  (zn)    {$z_n$};
+    % --- test latent pseudocoherence, set apart on the right ---
+    \node[latent, right=1.8cm of zn] (zp) {$z'$};
+
+    % kind embeddings
+    \node[obs, above=0.55cm of z1] (x1) {$x_1$};
+    \node[obs, above=0.55cm of z2] (x2) {$x_2$};
+    \node[above=0.55cm of zdots]   (xdots) {$\cdots$};
+    \node[obs, above=0.55cm of zn] (xn) {$x_n$};
+    \node[obs, above=0.55cm of zp] (xp) {$x'$};
+
+    % training observations
+    \node[obs, below=of z1]  (u1)    {$u_1$};
+    \node[obs, below=of z2]  (u2)    {$u_2$};
+    \node[below=of zdots]    (udots) {$\cdots$};
+    \node[obs, below=of zn]  (un)    {$u_n$};
+    % test observation: predicted prevalence
+    \node[obs, below=of zp]  (pp)    {$p'$};
+
+    % edges: GP -> all latents (train and test share one function)
+    \edge {theta} {gp};
+    \edge {gp} {z1,z2,zn,zp};
+    \edge {x1} {z1}; \edge {x2} {z2}; \edge {xn} {zn}; \edge {xp} {zp};
+    \edge {z1} {u1}; \edge {z2} {u2}; \edge {zn} {un};
+    \edge {zp} {pp};
+
+    % annotations for the two generative paths
+    \node[below=0.15cm of un, font=\scriptsize, align=center]
+         {RSA speaker ($\beta$)};
+    \node[below=0.15cm of pp, font=\scriptsize, align=center]
+         {$\sigma(\cdot)$ + Beta-mix};
+
+    % dashed plate over the training kinds only
+    \node[draw, rounded corners, dashed, fit=(x1)(xn)(z1)(zn)(u1)(un),
+          inner sep=7pt,
+          label={[font=\footnotesize]below left:training kinds $i=1\dots n$}] {};
+
+  \end{tikzpicture}
+  \caption{\textbf{Combined model.} A single coherence function $\phi$, drawn
+    from a Gaussian process over kind embeddings, governs both phases. At the
+    $n$ training kinds its evaluations $z_1,\dots,z_n$ generate the observed
+    utterances $u_i$ via the RSA speaker; at the held-out kind $x'$ its
+    evaluation $z'$ is mapped through the sigmoid link and Beta-mixture linking
+    shapes to the predicted prevalence $p'$. Inference over the training
+    utterances shapes the posterior over $\phi$ (and $\theta$), which in turn
+    determines the test prediction --- making explicit that $\phi$ is
+    represented not as a point function but as a \emph{distribution over
+    functions}.}
+  \label{fig:gm-combined}
+\end{figure}

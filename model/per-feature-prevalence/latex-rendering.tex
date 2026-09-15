@@ -1,0 +1,14 @@
+% Standalone wrapper to render graphical-models.tex on its own.
+% Compile:  pdflatex latex-rendering.tex   ->  latex-rendering.pdf
+% (Optional) PNGs from the PDF:
+%   gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r150 \
+%      -sOutputFile=latex-rendering-%d.png latex-rendering.pdf
+\documentclass{article}
+\usepackage{tikz}
+\usepackage{amsmath,amssymb}
+\usetikzlibrary{bayesnet}
+\usetikzlibrary{fit,positioning,calc,arrows.meta}
+\usepackage[margin=1in]{geometry}
+\begin{document}
+\input{graphical-models.tex}
+\end{document}

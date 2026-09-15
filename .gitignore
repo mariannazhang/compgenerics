@@ -27,8 +27,17 @@ data/processed
 *.bcf
 *.blg
 *.log
+*.out
+*.fdb_latexmk
+*.fls
 *.run.xml
 *.synctex.gz
+
+# rendered output of the standalone latex wrapper
+model/per-feature-prevalence/latex-rendering.pdf
+
+# claude
+.claude/
 
 # image/large files unless mentioned
 *.png
