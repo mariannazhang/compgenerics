@@ -56,3 +56,5 @@ settings.json
 # ds.store
 .DS_Store
 model/DS_Store
+# stray local export
+model/generic-interpretation-master.zip
