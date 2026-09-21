@@ -17,13 +17,13 @@
                                               # k=2 (mu_0, sigma), shapes still profiled.
 
 Always fits the preregistered replication data (load_study6_prereg); caches go to
-results/study6prereg-ablations/.
+results/study6-ablations/.
 
 literal/null are 'fitted shapes + fitted beta' fits with the same widened beta bound as
 the main study-6/8 runs; literalsem/notransfer are beta-free (fit_beta=False) because
 their models have no speaker / no utterances. Caches to
-results/study6prereg-ablations/posterior-<which>.npz in the same npz format as the main
-notebooks' load_or_fit. Consumed by model-study6prereg-ablations.ipynb.
+results/study6-ablations/posterior-<which>.npz in the same npz format as the main
+notebooks' load_or_fit. Consumed by model-study6-ablations.ipynb.
 """
 import os
 import sys
@@ -39,7 +39,7 @@ which = sys.argv[1]
 assert which in ('literal', 'literalsem', 'null', 'notransfer')
 
 MAX_EVALS = 400
-RESULTS_DIR = os.path.join('results', 'study6prereg-ablations')
+RESULTS_DIR = os.path.join('results', 'study6-ablations')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 # widened beta coordinate (same spec as the main study-6/8 fits); only used by
 # the fits that fit beta (literal / null), harmless for the beta-free ones.

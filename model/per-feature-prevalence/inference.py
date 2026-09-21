@@ -1,6 +1,6 @@
 """Laplace + VBMC inference machinery for the per-feature-prevalence GP model.
 
-Extracted from `model-param-recovery-vbmc-laplace.ipynb` and extended so that
+Extracted from `param-recovery.ipynb` and extended so that
 `output_scale` (sigma) is inferred alongside `(length_scale, mu_0)`. The model:
 
   - one GP coherence field per condition over [x_test, x_train_cond] with an RBF

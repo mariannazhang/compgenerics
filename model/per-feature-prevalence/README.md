@@ -44,7 +44,7 @@ $$
 $$\mathcal{L}(y',\vec{y};\vec{u}) = \log \left[\left[ \prod_i \sum_i P_S(u_i|z_i)P(z_i|y_i) \right] MVN(y',\vec{y};\mu,\Sigma)\right] $$
 
 
-the above is mostly covered in `model_jax.py`, except the actual fitting of linking functions currently happens in `model-study9-fwd-percond.ipynb`.
+the above is mostly covered in `model_jax.py` (`fit_beta_mixtures_all_features`), with the per-eval profiling of the linking shapes driven from `inference.py` (`total_log_lik_free_shapes`).
 
 the above is the "participant response model" that gives the probability of prevalence judgments given utterances and parameters (gp mu, sigma, lengthscale, and rationality parameter beta).
 

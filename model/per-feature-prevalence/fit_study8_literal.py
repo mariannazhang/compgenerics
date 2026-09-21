@@ -6,7 +6,7 @@ is kept, so summed log Z is comparable to the full fit) -> posterior-literal-mat
 Pass 'merged' as an argument for the shared-field variant (identical generic sets
 pooled; log Z NOT comparable) -> posterior-literal.npz. Same spec as the full
 study-8 fit otherwise (Laplace + VBMC, fitted linking shapes, fitted beta,
-widened beta bound, 2d). Consumed by model-study8-collapsed.ipynb.
+widened beta bound, 2d). Consumed by study8-collapsed.ipynb.
 """
 import os
 import sys
