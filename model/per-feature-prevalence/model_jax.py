@@ -3,8 +3,9 @@ import jax.numpy as jnp
 
 
 # MEANING_MATRIX[utt_idx, z]
-# is a statement about kindlinked feature true (0) or false (1)?
-# depends on the utterance and the actual kindlinkedness of feature
+# is a statement about a feature semantically true (1) or false (0)?
+# truth value of stmt depends on the utterance type (generic vs. specific) 
+# and the actual kindlinkedness of feature z (not kind-linked: z=0, kind-linked: z=1)
 MEANING_MATRIX = jnp.array([
     [0, 1],   # generic stmt:  false if z=0, true if z=1
     [1, 1],   # specific stmt: true for both z
@@ -15,9 +16,9 @@ N_UTTERANCES = MEANING_MATRIX.shape[0]
 def literal_listener(z_i: int, u_i: int, prior_z1: jnp.ndarray) -> jnp.ndarray:
     """
     L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
-    z_i: 0 or 1
-    u_i: 0=generic, 1=specific
-    prior_z1: scalar P(z=1)
+    z_i: kindlinkedness 0 or 1
+    u_i: utterance type, 0=generic, 1=specific
+    prior_z1: prior P(z=1)
     """
     prior = jnp.array([1.0 - prior_z1, prior_z1])   # [P(z=0), P(z=1)]
     meanings = MEANING_MATRIX[u_i]                  # posterior over z depends on meaning
@@ -29,11 +30,10 @@ def literal_listener(z_i: int, u_i: int, prior_z1: jnp.ndarray) -> jnp.ndarray:
 def speaker(u_i: int, z_i: int, beta: jnp.ndarray, prior_z1: jnp.ndarray,
             epsilon: float = 0.05) -> jnp.ndarray:
     """
-    S1(u_i | z_i): epsilon-noisy speaker.
-    With prob (1-epsilon): softmax over L0 utilities.
-    With prob epsilon: uniform over utterances.
-    u_i: 0=generic, 1=specific
-    z_i: 0 or 1
+    S1(u_i | z_i): speaker returns a distribution over utterances given value of z.
+    epsilon noisy speaker; 1-epsilon chance of softmaxing over L0 utilities. epsilon chance uniform over utterances.
+    u_i: utterance type, 0=generic, 1=specific
+    z_i: kindlinkedness 0 or 1
     """
     utt_indices = jnp.arange(N_UTTERANCES)
     # posterior over z depends on literal listener posterior
