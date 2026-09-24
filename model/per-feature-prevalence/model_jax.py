@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 
-
 # MEANING_MATRIX[utt_idx, z]
 # is a statement about a feature semantically true (1) or false (0)?
 # truth value of stmt depends on the utterance type (generic vs. specific) 
@@ -13,28 +12,23 @@ MEANING_MATRIX = jnp.array([
 
 N_UTTERANCES = MEANING_MATRIX.shape[0]
 
+# L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
+# z_i: kindlinkedness 0 or 1
+# u_i: utterance type, 0=generic, 1=specific
+# prior_z1: prior P(z=1)
 def literal_listener(z_i: int, u_i: int, prior_z1: jnp.ndarray) -> jnp.ndarray:
-    """
-    L0(z_i | u_i): literal listener posterior over z_i given utterance u_i.
-    z_i: kindlinkedness 0 or 1
-    u_i: utterance type, 0=generic, 1=specific
-    prior_z1: prior P(z=1)
-    """
     prior = jnp.array([1.0 - prior_z1, prior_z1])   # [P(z=0), P(z=1)]
     meanings = MEANING_MATRIX[u_i]                  # posterior over z depends on meaning
     unnorm = prior * meanings
     total = jnp.sum(unnorm)
     return jnp.where(total > 0, unnorm[z_i] / total, 0.0)
 
-
+# S(u_i | z_i): speaker returns a distribution over utterances given a value of z.
+# epsilon noisy speaker; 1-epsilon chance of softmaxing over L0 utilities. epsilon chance uniform over utterances.
+# u_i: utterance type, 0=generic, 1=specific
+# z_i: kindlinkedness 0 or 1
 def speaker(u_i: int, z_i: int, beta: jnp.ndarray, prior_z1: jnp.ndarray,
             epsilon: float = 0.05) -> jnp.ndarray:
-    """
-    S1(u_i | z_i): speaker returns a distribution over utterances given value of z.
-    epsilon noisy speaker; 1-epsilon chance of softmaxing over L0 utilities. epsilon chance uniform over utterances.
-    u_i: utterance type, 0=generic, 1=specific
-    z_i: kindlinkedness 0 or 1
-    """
     utt_indices = jnp.arange(N_UTTERANCES)
     # posterior over z depends on literal listener posterior
     # TODO: is it worth it to vmap if it's just 2 elements?
@@ -44,43 +38,35 @@ def speaker(u_i: int, z_i: int, beta: jnp.ndarray, prior_z1: jnp.ndarray,
     probs = (1 - epsilon) * p_rational + epsilon * p_uniform
     return probs[u_i]
 
-# P_S(u|y)
-# probabiliy of the speaker
-# TODO: rename to make the speaker nature clear, not a generic p_u_given_y
+# P_S(u|y): speaker returns a distribution of utterances given a value of y
+# y = "pseudocoherence"
+# P(u_i | y_i) = S1(u_i | z=0) * P(z=0 | y_i) + S1(u_i | z=1) * P(z=1 | y_i)
+# aka get the probability of kindlinked by sigmoiding y_i
+# then use that to weight the speaker utterances for each possible value of z
 def p_u_given_y(u_i: int, y_i: jnp.ndarray, beta: jnp.ndarray) -> jnp.ndarray:
-    """
-    P(u_i | y_i) = S1(u_i | z=0) * P(z=0 | y_i) + S1(u_i | z=1) * P(z=1 | y_i)
-    """
     p_z1 = jax.nn.sigmoid(y_i)
     p_z0 = 1.0 - p_z1
     return speaker(u_i, 0, beta, p_z1) * p_z0 + speaker(u_i, 1, beta, p_z1) * p_z1
 
+# condition on the value of z's meaning via the meaning matrix
+# then also inject a probability of misspeaking
+# return a distribution over utterances
+# specifics are true under both z -> no evidence about y
 def p_u_given_y_literal(u_i: int, y_i: jnp.ndarray, delta: float = 0.05) -> jnp.ndarray:
-    """LITERAL (truth-conditional) utterance likelihood -- no speaker, no pragmatics.
-
-    P(u | y) = sum_z [(1-delta) if u true under z else delta] * P(z | y), i.e.
-    condition on the utterance's literal truth with misspeak noise delta
-    (the gorgo model's `condition(.95 if true else .05)`, marginalized over z).
-    Generics: (1-delta)*pz1 + delta*(1-pz1). Specifics: true under both z ->
-    constant (1-delta) -> zero evidence about y (cancels in the posterior).
-    """
     p_z1 = jax.nn.sigmoid(y_i)
-    truth = MEANING_MATRIX[u_i]                       # [true if z=0, true if z=1]
+    truth = MEANING_MATRIX[u_i]         # [true if z=0, true if z=1]
     lik = (1.0 - delta) * truth + delta * (1.0 - truth)
     return lik[1] * p_z1 + lik[0] * (1.0 - p_z1)
 
 
-# TODO: rename output_scale to sigma / gp param
+# given 2D embeddings, return covariance matrix between each set of x_1,x_2
+# if in 1D: return sigma**2 * jnp.exp(-jnp.sum((x1 - x2)**2) / (2 * lengthscale**2))
 def rbf_kernel(X: jnp.ndarray, length_scale: jnp.ndarray,
                output_scale: jnp.ndarray) -> jnp.ndarray:
-    """
-    X: shape (n, 2) — 2D feature embeddings
-    Returns covariance matrix shape (n, n) with diag jitter for numerical stability.
-    """
     diff = X[:, None, :] - X[None, :, :]             # (n, n, 2)
     sq_dist = jnp.sum(diff ** 2, axis=-1)             # (n, n)
     K = output_scale**2 * jnp.exp(-sq_dist / (2 * length_scale**2))
-    return K + 1e-4 * jnp.eye(K.shape[0])
+    return K + (1e-4 * jnp.eye(K.shape[0]))
 
 
 def _mvn_logpdf_chol(x: jnp.ndarray, mean: jnp.ndarray, cov: jnp.ndarray) -> jnp.ndarray:
@@ -91,16 +77,6 @@ def _mvn_logpdf_chol(x: jnp.ndarray, mean: jnp.ndarray, cov: jnp.ndarray) -> jnp
     z = jnp.linalg.solve(L, diff)                         # L^{-1}(x - mu)
     log_det = 2.0 * jnp.sum(jnp.log(jnp.diag(L)))
     return -0.5 * (n * jnp.log(2 * jnp.pi) + log_det + jnp.dot(z, z))
-
-
-# def rbf_kernel(x1, x2, lengthscale, sigma):
-#     """Radial basis function kernel."""
-#     return sigma**2 * jnp.exp(-jnp.sum((x1 - x2)**2) / (2 * lengthscale**2))
-
-# rbf_kernel_vec = jax.vmap(
-#         jax.vmap(rbf_kernel, in_axes=(0, None, None, None)),
-#         in_axes=(None, 0, None, None)
-#     )
 
 def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
     """
@@ -150,13 +126,6 @@ def log_likelihood(training: dict, test: dict, params: dict) -> jnp.ndarray:
         raise ValueError("Likelihood too large: log_utterance + log_gp_prior exceeds 2000")
    
     return log_utterance + log_gp_prior
-
-# P(z|y)
-def coherence_from_pseudocoherence(y: jnp.ndarray) -> jnp.ndarray:
-    """
-    P(z'=1) = sigmoid(y)
-    """
-    return jax.nn.sigmoid(y)
 
 ############################
 ##  Beta Mixture Fitting  ##
