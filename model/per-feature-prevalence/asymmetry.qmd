@@ -8,21 +8,19 @@ execute:
   echo: false
 ---
 
-
 # Generative model
 
-The overall generative model can be thought of as a latent function `$phi.alt$`{=typst} that maps from the embedding space `$cal(X) = bb(R)^n$`{=typst} to a potential `$bb(R)$`{=typst}. 
-In the simplest case, a learner observes `$(x, y)$`{=typst} and needs to generalize to a new point `$x'$`{=typst}.
-This is a posterior predictive:
+The overall generative model can be thought of as a latent function `$phi.alt$`{=typst} that maps from the embedding space `$cal(X) = bb(R)^n$`{=typst} to a potential `$bb(R)$`{=typst}. In the simplest case, a learner observes `$(x, y)$`{=typst} and needs to generalize to a new point `$x'$`{=typst}. This is a posterior predictive:
+
 ```{=typst}
 $ P(phi.alt(x') | phi.alt(x) = y) = integral_Phi P(phi.alt(x') | phi.alt) P(phi.alt | phi.alt(x) = y) dif phi.alt $
 ```
 where we have a posterior over the function:
+
 ```{=typst}
 $ P(phi.alt | phi.alt(x) = y) prop P(phi.alt(x) = y | phi.alt) P(phi.alt) $
 ```
-
-with prior $P(phi.alt)$`{=typst} over functions.
+with prior $P(phi.alt)$\`{=typst} over functions.
 
 # GP formulation
 
@@ -31,18 +29,14 @@ In Gaussian Process (GP) terms, we can think of `$phi.alt$`{=typst} as a functio
 ```{=typst}
 $ phi.alt tilde cal(G P)(m, k) $
 ```
-
 The standard RBF kernel with amplitude `$sigma$`{=typst} and lengthscale `$l$`{=typst} is:
 
 ```{=typst}
 $ k_(sigma, l)(x, x') = sigma^2 exp(-(x - x')^2 / (2 l^2)) $
 ```
-
-From this perspective, $P(\phi)$ is a prior distribution parameterized by $m$, $\sigma$, and $l$, which we as the scientists need to infer but are fixed for the learner. 
-@fig-model depicts this as a graphical model. 
+From this perspective, $P(\phi)$ is a prior distribution parameterized by $m$, $\sigma$, and $l$, which we as the scientists need to infer but are fixed for the learner. @fig-model depicts this as a graphical model.
 
 ::: {#fig-model}
-
 ```{=typst}
 #import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
@@ -75,49 +69,40 @@ From this perspective, $P(\phi)$ is a prior distribution parameterized by $m$, $
   edge(<xp>, <yp>, "-|>"),
 )
 ```
-
 The learner's inference problem. Shaded nodes are observed. Dots are prior parameters, fixed for the learner and inferred by the scientist.
-
 :::
 
 ## Symmetric Generalization
 
-Under the standard RBF, generalization is always symmetric, meaning the effect of observing $(x, y)$ on a prediction at $x'$ is the same as the effect of observing $(x', y)$ on a prediction at $x$. 
-Formally, given `$x, x' in cal(X)$`{=typst} and `$y in bb(R)$`{=typst} generalization is symmetric (assuming a constant mean function):
+Under the standard RBF, generalization is always symmetric, meaning the effect of observing $(x, y)$ on a prediction at $x'$ is the same as the effect of observing $(x', y)$ on a prediction at $x$. Formally, given `$x, x' in cal(X)$`{=typst} and `$y in bb(R)$`{=typst} generalization is symmetric (assuming a constant mean function):
 
 ```{=typst}
 $ P(phi.alt(x) | phi.alt(x')=y) = P(phi.alt(x') | phi.alt(x) = y) $
 ```
-
 This is because the covariance matrix induced by the standard RBF is symmetric (as it must be) and its diagonal is constant. For example, take the unit RBF `$k = k_(1, 1)$`{=typst}, with `$x = -1$`{=typst}, `$x' = 1$`{=typst}, and `$y = 1$`{=typst}. The covariance matrix is:
 
 ```{=typst}
 $ K = mat(k(-1, -1), k(-1, 1); k(1, -1), k(1, 1)) approx mat(1, 0.135; 0.135, 1) $
 ```
-
 With zero mean, the two conditional distributions have the same mean and variance:
 
 ```{=typst}
 $ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.135, 0.982) $
 $ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.135, 0.982) $
 ```
-
 ## Asymmetric Generalization with Non-stationary Amplitude
 
-If the covariance matrix can have non-constant diagonal elements, then generalization can be asymmetric.
-For example, scale the unit RBF `$k$`{=typst} by an amplitude `$sigma(x)$`{=typst} that differs between the two points, `$sigma(-1) = 1.414$`{=typst} and `$sigma(1) = 0.707$`{=typst}. The covariance matrix is then:
+If the covariance matrix can have non-constant diagonal elements, then generalization can be asymmetric. For example, scale the unit RBF `$k$`{=typst} by an amplitude `$sigma(x)$`{=typst} that differs between the two points, `$sigma(-1) = 1.414$`{=typst} and `$sigma(1) = 0.707$`{=typst}. The covariance matrix is then:
 
 ```{=typst}
 $ K = mat(sigma(-1)^2 k(-1, -1), sigma(-1) sigma(1) k(-1, 1); sigma(1) sigma(-1) k(1, -1), sigma(1)^2 k(1, 1)) approx mat(2, 0.135; 0.135, 0.5) $
 ```
-
 With the same `$x = -1$`{=typst}, `$x' = 1$`{=typst}, `$y = 1$`{=typst}, and zero mean, the two conditional distributions differ:
 
 ```{=typst}
 $ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.068, 0.491) $
 $ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.270, 1.964) $
 ```
-
 The correlation between the two points is the same as before, 0.135. But observing at `$x' = 1$`{=typst}, where the prior variance is smaller, moves the prediction at `$x = -1$`{=typst} four times as much as the reverse.
 
 Therefore, we can define an RBF kernel with a non-stationary amplitude to achieve asymmetric generalization. The amplitude becomes a real-valued function of the input, `$sigma: cal(X) -> bb(R)$`{=typst}:
@@ -125,15 +110,12 @@ Therefore, we can define an RBF kernel with a non-stationary amplitude to achiev
 ```{=typst}
 $ k_(sigma(dot), l)(x, x') = (sigma(x) sigma(x') + epsilon^2) exp(-(x - x')^2 / (2 l^2)) $
 ```
-
 where `$epsilon >= 0$`{=typst} is a small constant. With `$epsilon = 0$`{=typst} the kernel scales the RBF by `$sigma(x) sigma(x')$`{=typst}, and the covariance matrix in the example above is the one induced by `$k_(sigma(dot), 1)$`{=typst}. With `$epsilon > 0$`{=typst} the prior variance never reaches zero, even where the amplitude does.
 
 ### Essentialness
 
-Amplitude roughly corresponds to the intrinsic variability of a point. 
-Where the amplitude is large in magnitude (high variance), a given observed value is unremarkable and generalizes less. 
-Where it is small (low variance), the same value is a large departure from the prior and generalizes more.
-We can then define a measure of "essentialness" as the inverse of the magnitude of the amplitude:
+Amplitude roughly corresponds to the intrinsic variability of a point. Where the amplitude is large in magnitude (high variance), a given observed value is unremarkable and generalizes less. Where it is small (low variance), the same value is a large departure from the prior and generalizes more. We can then define a measure of "essentialness" as the inverse of the magnitude of the amplitude:
+
 ```{=typst}
 $ e(x) = 1 / sqrt(sigma(x)^2 + epsilon^2) $
 ```
@@ -332,7 +314,6 @@ Another way to make the RBF kernel non-stationary is to let the lengthscale depe
 ```{=typst}
 $ k_(sigma, l(dot))(x, x') = sigma^2 sqrt((2 l(x) l(x')) / (l(x)^2 + l(x')^2)) exp(-(x - x')^2 / (l(x)^2 + l(x')^2)) $
 ```
-
 When `$l(x) = c$`{=typst} is constant, this is the standard RBF `$k_(sigma, c)$`{=typst}.
 
 ### Single observation example
@@ -342,14 +323,12 @@ Unlike a non-stationary amplitude, a non-stationary lengthscale does not make ge
 ```{=typst}
 $ K approx mat(1, 0.016; 0.016, 1) $
 ```
-
 and the two conditional distributions have the same mean and variance:
 
 ```{=typst}
 $ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.016, 1.000) $
 $ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.016, 1.000) $
 ```
-
 @fig-gibbs repeats the single observation example with the lengthscale in place of the amplitude. We hold the lengthscale at `$x = -1$`{=typst} at 1 and compare three values of the lengthscale at `$x' = 1$`{=typst}: 0.25, 1, and 4. The log lengthscale is a smooth curve through these two values, computed as the posterior mean of a GP with the unit RBF kernel.
 
 ```{python}
@@ -413,3 +392,112 @@ plt.show()
 The reason is redundancy. Where the lengthscale is short, the two observations are nearly independent, so they count as two pieces of evidence and their effects add. Where the lengthscale is long, the second observation mostly repeats the first, so together they count as little more than one.
 
 This differs from the amplitude asymmetry in what it needs. A non-stationary amplitude makes generalization asymmetric even with one observation per side. A non-stationary lengthscale does so only with several observations per side.
+
+## Asymmetric Generalization with "Soft" Evidence
+
+The examples in this document so far all condition on exact values of `$phi.alt$`{=typst}. But in our generics model, learners don't observe true values, but rather get generic statements that offer evidence about `$phi.alt$`{=typst} at the training features.
+
+Because these are not exact observations, the learner's posterior belief about coherence $y$ is influenced by two parts: the prior (defined by $\mu_0$ and $\sigma^2$) and the likelihood of getting a generic given a speaker model.
+
+But note that when $\sigma$ is small (which is supposed to indicate high causal potential), our posterior for the coherence can't vary much from the prior mean, unless lots of data is observed. When $\sigma$ is large, coherence moves closer to what the generic statement suggests more quickly.
+
+Therefore, there's a tradeoff between flexibility of updating and causality when replacing an exact observation with an uncertain (Gaussian) one, `$tilde(y) = phi.alt(x) + epsilon$`{=typst}, where `$epsilon tilde cal(N)(0, tau^2)$`{=typst}. With zero prior mean, the prediction at `$x'$`{=typst} is:
+
+```{=typst}
+$ bb(E)[phi.alt(x') | tilde(y)] = (sigma(x') sigma(x) rho(x, x')) / (sigma(x)^2 + tau^2) tilde(y) $
+```
+where `$rho(x, x')$`{=typst} is the unit RBF correlation. With `$tau = 0$`{=typst} this is the exact case, `$rho sigma(x') / sigma(x) tilde(y)$`{=typst}, and the asymmetry is the ratio of amplitudes. With `$tau > 0$`{=typst}, a source with small amplitude moves very little itself, because its tight prior outweighs the evidence. In the limit `$sigma(x) << tau$`{=typst} the prediction becomes `$sigma(x') sigma(x) rho tilde(y) / tau^2$`{=typst}, which is **symmetric** in the two amplitudes. Soft evidence moves generalization from the exact case's amplitude ratio toward the amplitude product.
+
+### Two-cluster example
+
+Consider two clusters on a line. Cluster A has a trained point at `$x = -1$`{=typst} and a test point at `$x = -0.6$`{=typst}. Cluster B is the mirror of A, with a trained point at `$x = 1$`{=typst} and a test point at `$x = 0.6$`{=typst}. Evidence `$tilde(y) = 1$`{=typst} comes one trained point at a time. In this example, we can compare a constant amplitude with a log-linear one, and exact observations with
+
+`$sigma(x) = e^(0.75 x)$`{=typst}, which is low around A, and exact evidence (`$tau = 0$`{=typst}) with soft evidence (`$tau = 1$`{=typst}). The kernel is `$k_(sigma(dot), 1)$`{=typst} with `$epsilon = 0$`{=typst}. This is the same log-linear form as the per-feature-prevalence model's non-stationary amplitude, there with `$x$`{=typst} the 2D feature embedding.
+
+```{python}
+def gp_soft(x, y, test, mean, kernel, noise_sd):
+    # GP posterior mean given noisy observations y at x (noise_sd = 0 is an exact observation)
+    K = kernel(x[:, None], x[None, :]) + (noise_sd**2 + 1e-6) * jnp.eye(len(x))
+    K_s = kernel(x[:, None], test[None, :])
+    return mean + K_s.T @ jnp.linalg.solve(K, y - mean)
+
+def make_loglinear_rbf(w):
+    # log sigma(x) = w x, so sigma(0) = 1 and sigma grows by e^w per unit of x
+    def amp(x):
+        return jnp.exp(w * x)
+
+    def kernel(x1, x2):
+        return amp(x1) * amp(x2) * rbf(x1, x2)
+
+    return amp, kernel
+
+soft_xs = jnp.linspace(-2.2, 2.2, 250)
+A_TRAIN, A_TEST, B_TRAIN, B_TEST = -1.0, -0.6, 1.0, 0.6
+soft_amps = {'Constant amplitude': 0.0, 'Low amplitude around A': 0.75}
+soft_evidence = {'Exact observation': 0.0, 'Soft evidence': 1.0}
+soft_y = jnp.array([1.0])
+```
+
+```{python}
+#| label: fig-soft
+#| fig-cap: 'Amplitude functions (top) and posterior means of $\phi$ after evidence at the trained point of cluster A (red) or cluster B (blue), for exact observations (middle) and soft evidence (bottom). Crosses mark the evidence and open circles mark predictions at the two test points.'
+colA, colB = 'tab:red', 'tab:blue'
+fig, axes = plt.subplots(3, 2, figsize=(9, 9), sharex=True, sharey='row')
+for col, (amp_name, w) in enumerate(soft_amps.items()):
+    amp, kernel = make_loglinear_rbf(w)
+    ax = axes[0, col]
+    ax.plot(soft_xs, amp(soft_xs), color='k', lw=2)
+    ax.axhline(0, color='k', ls='--', lw=1)
+    ax.set_title(f'{amp_name}\nAmplitude function')
+    ax.set_ylabel('Amplitude')
+    for row, (ev_name, noise_sd) in enumerate(soft_evidence.items(), start=1):
+        ax = axes[row, col]
+        ax.axhline(0, color='k', ls='--', lw=1)
+        # labels: red above each point, blue below, so the two curves' labels never overlap
+        for label, src, tests, color, dy, va in [('A', A_TRAIN, [A_TEST, B_TEST], colA, 7, 'bottom'),
+                                                 ('B', B_TRAIN, [B_TEST, A_TEST], colB, -7, 'top')]:
+            ax.plot(soft_xs, gp_soft(jnp.array([src]), soft_y, soft_xs, 0.0, kernel, noise_sd),
+                    color=color, lw=2, label=f'evidence at {label}')
+            ax.scatter([src], [1.0], marker='x', color=color, s=60, zorder=4)
+            preds = gp_soft(jnp.array([src]), soft_y, jnp.array(tests), 0.0, kernel, noise_sd)
+            ax.scatter(tests, preds, facecolors='white', edgecolors=color, linewidths=2, s=50, zorder=4)
+            for t, p in zip(tests, preds):
+                annotate(ax, f'{float(p):.2f}', (t, float(p)), (0, dy), ha='center', va=va, fontsize=8, color=color)
+        ax.set_title(ev_name)
+        ax.set_ylabel(r'Posterior mean of $\phi$')
+        ax.set_ylim(-0.1, 1.5)
+    for ax in axes[1:, col]:
+        ax.axvspan(-1.25, -0.35, color=colA, alpha=0.06)
+        ax.axvspan(0.35, 1.25, color=colB, alpha=0.06)
+axes[1, 0].legend(fontsize=8, loc='upper left')
+for ax in axes[-1]:
+    ax.set_xlabel('Input')
+for ax in axes.flat:
+    ax.label_outer()
+plt.tight_layout()
+plt.show()
+```
+
+@fig-soft shows the result, and the predictions at the test points are:
+
+| Evidence | Amplitude    | A → A    | A → B | B → A | B → B | (A → B) / (B → A) |
+|----------|--------------|----------|-------|-------|-------|-------------------|
+| exact    | constant     | 0.92     | 0.28  | 0.28  | 0.92  | 1.0               |
+| exact    | low around A | 1.25     | 0.92  | 0.08  | 0.68  | 11.0              |
+| soft     | constant     | 0.46     | 0.14  | 0.14  | 0.46  | 1.0               |
+| soft     | low around A | **0.23** | 0.17  | 0.07  | 0.56  | **2.5**           |
+
+With exact observations, the low amplitude around A makes A a strong source. Evidence at A reaches B almost undiminished (0.92), evidence at B barely reaches A (0.08), and A's own test point still rises fully (1.25).
+
+With soft evidence, two things change:
+
+1.  **The asymmetry shrinks from 11 to 2.5.** In the exact case the source value is pinned at 1 no matter what its amplitude is. Here the posterior at A's trained point only reaches 0.18, while B's reaches 0.82. A small amplitude makes the source resist the evidence, which cancels most of the gain from the amplitude ratio.
+2.  **A's own boost collapses.** The rise at A's test point halves, from 0.46 to 0.23, and is now well below B's own boost (0.56). Both of A's points sit in the same low-amplitude region, so the within-cluster prediction scales with the product of two small amplitudes.
+
+So under soft evidence, a low-amplitude cluster sends somewhat more than it receives, but its own features hardly move. A high-amplitude cluster gives the opposite: a large own boost, but it receives more and sends less.
+
+### Implication for the generics model
+
+The same structure holds exactly for the speaker likelihood. At the Laplace mode, `$y - mu_0 = K alpha$`{=typst}, where `$alpha$`{=typst} is the slope of `$log p(u | y)$`{=typst} at each trained feature. So a test feature's shift is `$sum_s sigma(x_t) sigma(x_s) rho(x_t, x_s) alpha_s$`{=typst}, the amplitude product times the generic's remaining pull. The amplitude only creates asymmetry indirectly, through `$alpha$`{=typst}: a low-amplitude source stays further below the generic's preferred coherence, so it keeps pulling harder.
+
+In Study 9, physical generics raise physical features the most and also raise diet and personality features, while physical features barely move after diet or personality generics. A low amplitude at the physical features produces the third property and a little of the second, but it suppresses the first, as cluster A does in @fig-soft. A high amplitude does the reverse. So no amplitude gradient fits all three. Fitting the amplitude weights to Study 9 gives `$w$`{=typst} near 0, and no improvement in the log marginal likelihood (log BF = −0.84). The directional pattern in the data needs a mechanism on the evidence side: generics about physical features have to carry more evidence or reach further, which acts on `$alpha$`{=typst} rather than on the amplitude.
