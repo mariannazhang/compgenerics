@@ -408,11 +408,9 @@ $ bb(E)[phi.alt(x') | tilde(y)] = (sigma(x') sigma(x) rho(x, x')) / (sigma(x)^2 
 ```
 where `$rho(x, x')$`{=typst} is the unit RBF correlation. With `$tau = 0$`{=typst} this is the exact case, `$rho sigma(x') / sigma(x) tilde(y)$`{=typst}, and the asymmetry is the ratio of amplitudes. With `$tau > 0$`{=typst}, a source with small amplitude moves very little itself, because its tight prior outweighs the evidence. In the limit `$sigma(x) << tau$`{=typst} the prediction becomes `$sigma(x') sigma(x) rho tilde(y) / tau^2$`{=typst}, which is **symmetric** in the two amplitudes. Soft evidence moves generalization from the exact case's amplitude ratio toward the amplitude product.
 
-### Two-cluster example
+### Multiple observations in a cluster
 
-Consider two clusters on a line. Cluster A has a trained point at `$x = -1$`{=typst} and a test point at `$x = -0.6$`{=typst}. Cluster B is the mirror of A, with a trained point at `$x = 1$`{=typst} and a test point at `$x = 0.6$`{=typst}. Evidence `$tilde(y) = 1$`{=typst} comes one trained point at a time. In this example, we can compare a constant amplitude with a log-linear one, and exact observations with
-
-`$sigma(x) = e^(0.75 x)$`{=typst}, which is low around A, and exact evidence (`$tau = 0$`{=typst}) with soft evidence (`$tau = 1$`{=typst}). The kernel is `$k_(sigma(dot), 1)$`{=typst} with `$epsilon = 0$`{=typst}. This is the same log-linear form as the per-feature-prevalence model's non-stationary amplitude, there with `$x$`{=typst} the 2D feature embedding.
+Consider two clusters on a line. Cluster A sits around `$x = -1$`{=typst}, where the log-linear amplitude `$sigma(x) = e^(0.75 x)$`{=typst} is low, and has a test point at `$x = -0.5$`{=typst}. Cluster B sits around `$x = 1$`{=typst}, where the amplitude is high, with a test point at `$x = 0.5$`{=typst}. Only cluster A receives evidence: `$n = 2$`{=typst}, 3 or 4 soft observations `$tilde(y) = 1$`{=typst} (`$tau = 1$`{=typst}), spread evenly over `$[-1.3, -0.7]$`{=typst}. We then predict at both test points: A's own (A → A) and B's (A → B). We compare this amplitude with a constant one. The kernel is `$k_(sigma(dot), 1)$`{=typst} with `$epsilon = 0$`{=typst}. This is the same log-linear form as the per-feature-prevalence model's non-stationary amplitude, which there uses the 2D feature embedding as `$x$`{=typst}.
 
 ```{python}
 def gp_soft(x, y, test, mean, kernel, noise_sd):
@@ -431,18 +429,22 @@ def make_loglinear_rbf(w):
 
     return amp, kernel
 
+def cluster_points(n):
+    # n soft observations spread over cluster A
+    return jnp.array([-1.0]) if n == 1 else jnp.linspace(-1.3, -0.7, n)
+
 soft_xs = jnp.linspace(-2.2, 2.2, 250)
-A_TRAIN, A_TEST, B_TRAIN, B_TEST = -1.0, -0.6, 1.0, 0.6
+A_TEST, B_TEST = -0.5, 0.5
+TAU = 1.0
 soft_amps = {'Constant amplitude': 0.0, 'Low amplitude around A': 0.75}
-soft_evidence = {'Exact observation': 0.0, 'Soft evidence': 1.0}
-soft_y = jnp.array([1.0])
+soft_ns = [2, 3, 4]
 ```
 
 ```{python}
 #| label: fig-soft
-#| fig-cap: 'Amplitude functions (top) and posterior means of $\phi$ after evidence at the trained point of cluster A (red) or cluster B (blue), for exact observations (middle) and soft evidence (bottom). Crosses mark the evidence and open circles mark predictions at the two test points.'
+#| fig-cap: 'Amplitude functions (top) and posterior means of $\phi$ after $n$ = 2, 3 or 4 soft observations in cluster A. Crosses mark the observations at their observed value and open circles mark predictions at the test points of cluster A (shaded red) and cluster B (shaded blue).'
 colA, colB = 'tab:red', 'tab:blue'
-fig, axes = plt.subplots(3, 2, figsize=(9, 9), sharex=True, sharey='row')
+fig, axes = plt.subplots(1 + len(soft_ns), 2, figsize=(9, 11), sharex=True, sharey='row')
 for col, (amp_name, w) in enumerate(soft_amps.items()):
     amp, kernel = make_loglinear_rbf(w)
     ax = axes[0, col]
@@ -450,26 +452,24 @@ for col, (amp_name, w) in enumerate(soft_amps.items()):
     ax.axhline(0, color='k', ls='--', lw=1)
     ax.set_title(f'{amp_name}\nAmplitude function')
     ax.set_ylabel('Amplitude')
-    for row, (ev_name, noise_sd) in enumerate(soft_evidence.items(), start=1):
+    for row, n in enumerate(soft_ns, start=1):
         ax = axes[row, col]
         ax.axhline(0, color='k', ls='--', lw=1)
-        # labels: red above each point, blue below, so the two curves' labels never overlap
-        for label, src, tests, color, dy, va in [('A', A_TRAIN, [A_TEST, B_TEST], colA, 7, 'bottom'),
-                                                 ('B', B_TRAIN, [B_TEST, A_TEST], colB, -7, 'top')]:
-            ax.plot(soft_xs, gp_soft(jnp.array([src]), soft_y, soft_xs, 0.0, kernel, noise_sd),
-                    color=color, lw=2, label=f'evidence at {label}')
-            ax.scatter([src], [1.0], marker='x', color=color, s=60, zorder=4)
-            preds = gp_soft(jnp.array([src]), soft_y, jnp.array(tests), 0.0, kernel, noise_sd)
-            ax.scatter(tests, preds, facecolors='white', edgecolors=color, linewidths=2, s=50, zorder=4)
-            for t, p in zip(tests, preds):
-                annotate(ax, f'{float(p):.2f}', (t, float(p)), (0, dy), ha='center', va=va, fontsize=8, color=color)
-        ax.set_title(ev_name)
+        x_A = cluster_points(n)
+        y_obs = jnp.ones(n)
+        tests = jnp.array([A_TEST, B_TEST])
+        ax.plot(soft_xs, gp_soft(x_A, y_obs, soft_xs, 0.0, kernel, TAU), color=colA, lw=2)
+        ax.scatter(x_A, y_obs, marker='x', color=colA, s=50, zorder=4)
+        preds = gp_soft(x_A, y_obs, tests, 0.0, kernel, TAU)
+        ax.scatter(tests, preds, facecolors='white', edgecolors=colA, linewidths=2, s=50, zorder=4)
+        for t, p in zip(tests, preds):
+            annotate(ax, f'{float(p):.2f}', (float(t), float(p)), (0, 7), ha='center', va='bottom',
+                     fontsize=8, color=colA)
+        ax.axvspan(-1.35, -0.45, color=colA, alpha=0.06)
+        ax.axvspan(0.45, 1.35, color=colB, alpha=0.06)
+        ax.set_title(f'n = {n} observations in cluster A')
         ax.set_ylabel(r'Posterior mean of $\phi$')
-        ax.set_ylim(-0.1, 1.5)
-    for ax in axes[1:, col]:
-        ax.axvspan(-1.25, -0.35, color=colA, alpha=0.06)
-        ax.axvspan(0.35, 1.25, color=colB, alpha=0.06)
-axes[1, 0].legend(fontsize=8, loc='upper left')
+        ax.set_ylim(-0.1, 1.2)
 for ax in axes[-1]:
     ax.set_xlabel('Input')
 for ax in axes.flat:
@@ -477,27 +477,29 @@ for ax in axes.flat:
 plt.tight_layout()
 plt.show()
 ```
+<!-- 
+@fig-soft shows the result. Here are the predictions at the two test points, with the single-observation case (`$n = 1$`{=typst}, at `$x = -1$`{=typst}) added for reference:
 
-@fig-soft shows the result, and the predictions at the test points are:
+| n | amplitude | A's trained points (mean) | A → A | A → B | (A → B) / (A → A) |
+|---|---|---|---|---|---|
+| 1 | constant | 0.50 | 0.44 | 0.16 | 0.37 |
+| 1 | low around A | 0.18 | **0.23** | 0.18 | 0.78 |
+| 2 | constant | 0.65 | 0.60 | 0.24 | 0.40 |
+| 2 | low around A | 0.30 | 0.40 | 0.35 | 0.88 |
+| 3 | constant | 0.74 | 0.68 | 0.26 | 0.39 |
+| 3 | low around A | 0.39 | 0.51 | 0.43 | 0.84 |
+| 4 | constant | 0.79 | 0.72 | 0.28 | 0.39 |
+| 4 | low around A | 0.46 | **0.60** | **0.50** | 0.82 | -->
 
-| Evidence | Amplitude    | A → A    | A → B | B → A | B → B | (A → B) / (B → A) |
-|----------|--------------|----------|-------|-------|-------|-------------------|
-| exact    | constant     | 0.92     | 0.28  | 0.28  | 0.92  | 1.0               |
-| exact    | low around A | 1.25     | 0.92  | 0.08  | 0.68  | 11.0              |
-| soft     | constant     | 0.46     | 0.14  | 0.14  | 0.46  | 1.0               |
-| soft     | low around A | **0.23** | 0.17  | 0.07  | 0.56  | **2.5**           |
+With one observation, the low amplitude around A keeps the posterior at A's testing point at 0.18, against 0.50 under a constant amplitude. A's own test point rises only 0.23, about half the constant-amplitude value (0.44). As the observations accumulate, two things happen:
 
-With exact observations, the low amplitude around A makes A a strong source. Evidence at A reaches B almost undiminished (0.92), evidence at B barely reaches A (0.08), and A's own test point still rises fully (1.25).
+1. **A's own boost recovers.** The evidence adds up against A's tight prior, so A's trained points reach 0.46 by `$n = 4$`{=typst}. A's own boost rises to 0.60, close to the constant-amplitude value (0.72).
+2. **A's evidence reaches B more and more.** Under a constant amplitude, B's test point gets about 40% of A's own boost, at every `$n$`{=typst}. With the low amplitude around A, it gets 80–90%, because B's amplitude is high. B's absolute rise, though, depends on how far A's own points have moved: it is only 0.18 with one observation, and grows to 0.50 with four, against 0.28 under a constant amplitude.
 
-With soft evidence, two things change:
-
-1.  **The asymmetry shrinks from 11 to 2.5.** In the exact case the source value is pinned at 1 no matter what its amplitude is. Here the posterior at A's trained point only reaches 0.18, while B's reaches 0.82. A small amplitude makes the source resist the evidence, which cancels most of the gain from the amplitude ratio.
-2.  **A's own boost collapses.** The rise at A's test point halves, from 0.46 to 0.23, and is now well below B's own boost (0.56). Both of A's points sit in the same low-amplitude region, so the within-cluster prediction scales with the product of two small amplitudes.
-
-So under soft evidence, a low-amplitude cluster sends somewhat more than it receives, but its own features hardly move. A high-amplitude cluster gives the opposite: a large own boost, but it receives more and sends less.
+So a low-amplitude cluster pays for its tight prior with a weak own boost when evidence is scarce. It becomes a strong source, one whose evidence reaches the high-amplitude region almost undiminished, only as evidence accumulates. The Gaussian observation in this example accumulates without limit. A generic does not. Its likelihood peaks at an intermediate coherence and nearby generics are largely redundant, so in the generics model the trade-off persists even with the 15 generics per condition of Study 9. In the Study 9 simulation, at the fitted parameters, the physical condition's own shift drops from 0.37 to 0.16 when the amplitude at physical is lowered by `$|w| = 0.5$`{=typst}.
 
 ### Implication for the generics model
 
 The same structure holds exactly for the speaker likelihood. At the Laplace mode, `$y - mu_0 = K alpha$`{=typst}, where `$alpha$`{=typst} is the slope of `$log p(u | y)$`{=typst} at each trained feature. So a test feature's shift is `$sum_s sigma(x_t) sigma(x_s) rho(x_t, x_s) alpha_s$`{=typst}, the amplitude product times the generic's remaining pull. The amplitude only creates asymmetry indirectly, through `$alpha$`{=typst}: a low-amplitude source stays further below the generic's preferred coherence, so it keeps pulling harder.
 
-In Study 9, physical generics raise physical features the most and also raise diet and personality features, while physical features barely move after diet or personality generics. A low amplitude at the physical features produces the third property and a little of the second, but it suppresses the first, as cluster A does in @fig-soft. A high amplitude does the reverse. So no amplitude gradient fits all three. Fitting the amplitude weights to Study 9 gives `$w$`{=typst} near 0, and no improvement in the log marginal likelihood (log BF = −0.84). The directional pattern in the data needs a mechanism on the evidence side: generics about physical features have to carry more evidence or reach further, which acts on `$alpha$`{=typst} rather than on the amplitude.
+In Study 9, physical generics raise physical features the most and also raise diet and personality features, while physical features barely move after diet or personality generics. A low amplitude at the physical features produces the third property and a little of the second, but it suppresses the first, as cluster A does in @fig-soft when evidence is scarce. A high amplitude does the reverse. So no amplitude gradient fits all three. Fitting the amplitude weights to Study 9 gives `$w$`{=typst} near 0, and no improvement in the log marginal likelihood (log BF = −0.84). The directional pattern in the data needs a mechanism on the evidence side: generics about physical features have to carry more evidence or reach further, which acts on `$alpha$`{=typst} rather than on the amplitude.
