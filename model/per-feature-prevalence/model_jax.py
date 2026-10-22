@@ -62,10 +62,14 @@ def p_u_given_y_literal(u_i: int, y_i: jnp.ndarray, delta: float = 0.05) -> jnp.
 # given 2D embeddings, return covariance matrix between each set of x_1,x_2
 # if in 1D: return sigma**2 * jnp.exp(-jnp.sum((x1 - x2)**2) / (2 * lengthscale**2))
 def rbf_kernel(X: jnp.ndarray, length_scale: jnp.ndarray,
-               output_scale: jnp.ndarray) -> jnp.ndarray:
+               output_scale: jnp.ndarray, amp: jnp.ndarray = None) -> jnp.ndarray:
     diff = X[:, None, :] - X[None, :, :]             # (n, n, 2)
     sq_dist = jnp.sum(diff ** 2, axis=-1)             # (n, n)
     K = output_scale**2 * jnp.exp(-sq_dist / (2 * length_scale**2))
+    if amp is not None:
+        # non-stationary amplitude: amp is a per-point MULTIPLIER on output_scale, so
+        # K_ij = output_scale^2 amp_i amp_j RBF_ij (exactly the stationary K when amp = 1)
+        K = K * (amp[:, None] * amp[None, :])
     return K + (1e-4 * jnp.eye(K.shape[0]))
 
 

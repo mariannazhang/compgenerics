@@ -94,11 +94,14 @@ def load_geometry(features_pkl_path='../features/set2_features_dataframe.pkl'):
     test_feature_names = list(CSV_TO_FEATURE.values())
     x_test = coords(feat_idx.loc[test_feature_names])   # (J, D)
     test_trait = [CAT_SHORT[feat_idx.loc[n, 'category']] for n in test_feature_names]
+    X_feat = df[['x_2d', 'y_2d']].values
+    coord_sd = float(np.sqrt(np.mean((X_feat - X_feat.mean(0)) ** 2)))   # pooled over ALL features
 
     return {'x_train_cond': x_train_cond, 'u_train_cond': u_train_cond,
             'train_names_cond': train_names_cond,
             'x_test': x_test, 'test_feature_names': test_feature_names,
-            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d'}
+            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d',
+            'coord_sd': coord_sd}
 
 
 def load_responses(csv_path, clip_interior=True):
@@ -138,19 +141,51 @@ def load_responses(csv_path, clip_interior=True):
 # ---------------------------------------------------------------------------
 # Laplace marginal likelihood log Z(theta) per condition
 # ---------------------------------------------------------------------------
-def _neg_log_post(y, length_scale, mu_0, output_scale, beta_speaker,
-                  X_all, u_train, logpdf_kl, logpdf_nkl, J):
+# Non-stationary amplitude (asymmetric generalization; see asymmetry.qmd):
+#   sigma(x) = output_scale * exp(amp_w . x / coord_sd),   K_ij = sigma_i sigma_j RBF_ij
+# coord_sd is ONE pooled SD of the feature-set coordinates (geom['coord_sd']; the
+# coordinates are centred, mean ~0), so amp_w = 1 changes sigma by a factor of e per
+# SD of the space. amp_w = None / 0 is the stationary model (output_scale everywhere).
+AMP_PRIOR_SD = 0.5          # amp_w ~ N(0, 0.5^2) per coordinate when fitted
+
+
+def amp_multiplier(X, amp_w, coord_sd):
+    """Per-point amplitude multiplier exp(amp_w . x / coord_sd), (len(X),); exactly 1 at
+    amp_w = 0, so the stationary kernel is reproduced bit-for-bit."""
+    return jnp.exp(jnp.asarray(X) @ amp_w / coord_sd)
+
+
+def amplitude(X, output_scale, amp_w, coord_sd):
+    """Per-point GP amplitude sigma(x) = output_scale * amp_multiplier, (len(X),)."""
+    return output_scale * amp_multiplier(X, amp_w, coord_sd)
+
+
+def _amp_args(amp_w, X, coord_sd):
+    """(amp_w array, coord_sd) for the compiled objective: amp_w=None -> zeros. A
+    nonzero amp_w needs the geometry's coord_sd (no silent default scale)."""
+    w = jnp.zeros(jnp.asarray(X).shape[1]) if amp_w is None else jnp.asarray(amp_w, dtype=float)
+    if coord_sd is None:
+        if bool(jnp.any(w != 0)):
+            raise ValueError("nonzero amp_w needs geom['coord_sd'] (pooled coordinate SD)")
+        coord_sd = 1.0
+    return w, float(coord_sd)
+
+
+def _neg_log_post(y, length_scale, mu_0, output_scale, beta_speaker, amp_w,
+                  X_all, u_train, logpdf_kl, logpdf_nkl, coord_sd, J):
     """Neg log-posterior over the flat coherence vector y = concat([y_test, y_train]).
 
     g(y) = GP prior + speaker(u_train|y_train) + Beta-MIXTURE ratings(r | pz1=sigmoid(y_test)).
     Ratings likelihood per (i,j): pz1_j*Beta(r|a_kl,b_kl) + (1-pz1_j)*Beta(r|a_nkl,b_nkl),
     in log space via logaddexp -> differentiable in y. The per-(i,j) component logpdfs
     don't depend on y (shapes shared & fixed), so they're precomputed and passed in.
-    theta = (length_scale, mu_0, output_scale) are traced args -> compile once.
+    theta = (length_scale, mu_0, output_scale, beta_speaker, amp_w) are traced args ->
+    compile once. amp_w = 0 gives the stationary kernel (see amplitude()).
     """
     y_test, y_train = y[:J], y[J:]
     mu_vec = jnp.full(y.shape[0], mu_0)
-    K = rbf_kernel(X_all, length_scale, output_scale)
+    K = rbf_kernel(X_all, length_scale, output_scale,
+                   amp=amp_multiplier(X_all, amp_w, coord_sd))
 
     log_gp = _mvn_logpdf_chol(y, mu_vec, K)
 
@@ -175,11 +210,12 @@ _hess_fn = jax.jit(jax.hessian(_neg_log_post), static_argnames='J')
 # accepted-and-ignored so the two objectives are call-compatible. Selected per
 # group via cd['speaker'] ('rsa' default | 'literal'), stamped from
 # geom['speaker'] by prepare_condition / _ratings_free_cond_data.
-def _neg_log_post_literal(y, length_scale, mu_0, output_scale, beta_speaker,
-                          X_all, u_train, logpdf_kl, logpdf_nkl, J):
+def _neg_log_post_literal(y, length_scale, mu_0, output_scale, beta_speaker, amp_w,
+                          X_all, u_train, logpdf_kl, logpdf_nkl, coord_sd, J):
     y_test, y_train = y[:J], y[J:]
     mu_vec = jnp.full(y.shape[0], mu_0)
-    K = rbf_kernel(X_all, length_scale, output_scale)
+    K = rbf_kernel(X_all, length_scale, output_scale,
+                   amp=amp_multiplier(X_all, amp_w, coord_sd))
     log_gp = _mvn_logpdf_chol(y, mu_vec, K)
 
     def log_utt_fn(u_i, y_i):
@@ -219,7 +255,8 @@ def prepare_condition(geom, c, responses_c, link_shapes=DEFAULT_LINK_SHAPES):
             'logpdf_nkl': jbeta.logpdf(r, a_nkl, b_nkl),
             'J': geom['J'],
             'D': geom['J'] + int(geom['x_train_cond'][c].shape[0]),
-            'speaker': geom.get('speaker', 'rsa')}
+            'speaker': geom.get('speaker', 'rsa'),
+            'coord_sd': geom.get('coord_sd')}
 
 
 def prepare_all_conditions(geom, responses_cond, link_shapes=DEFAULT_LINK_SHAPES):
@@ -232,16 +269,18 @@ def prepare_all_conditions(geom, responses_cond, link_shapes=DEFAULT_LINK_SHAPES
 
 
 def laplace_log_Z(cd, length_scale, mu_0, output_scale,
-                  beta_speaker=BETA_SPEAKER, n_newton=100, tol=1e-8):
+                  beta_speaker=BETA_SPEAKER, n_newton=100, tol=1e-8, amp_w=None):
     """Laplace approx of log p(ratings_c | theta) for one condition.
 
     DAMPED Newton (backtracking line search) minimizes -g(y) to the mode, then
     log Z = g(y_hat) + D/2 log(2pi) - 1/2 log det H, with H = grad^2 (-g)(y_hat)
     = posterior precision. `cd` is a prepare_condition() dict.
+    amp_w: non-stationary amplitude weights (None = stationary; see amplitude()).
     Returns (log_Z, y_hat, ok).
     """
-    theta = (float(length_scale), float(mu_0), float(output_scale), float(beta_speaker))
-    args = (cd['X_all'], cd['u_train'], cd['logpdf_kl'], cd['logpdf_nkl'])
+    w, coord_sd = _amp_args(amp_w, cd['X_all'], cd.get('coord_sd'))
+    theta = (float(length_scale), float(mu_0), float(output_scale), float(beta_speaker), w)
+    args = (cd['X_all'], cd['u_train'], cd['logpdf_kl'], cd['logpdf_nkl'], coord_sd)
     D, J = cd['D'], cd['J']
     val_fn, grad_fn, hess_fn = _OBJ_FNS[cd.get('speaker', 'rsa')]
     y = jnp.full(D, mu_0)                    # init at the GP mean (mu_0)
@@ -272,9 +311,11 @@ def laplace_log_Z(cd, length_scale, mu_0, output_scale,
     return float(log_Z), np.asarray(y), ok
 
 
-def total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER):
+def total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER,
+                  amp_w=None):
     """Sum of Laplace log Z across the groups in cond_data at the given theta (no theta-prior)."""
-    return sum(laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)[0]
+    return sum(laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker,
+                             amp_w=amp_w)[0]
                for c in cond_data)
 
 
@@ -304,11 +345,13 @@ def total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA
 SHAPE_CLIP = (0.1, 100.0)
 
 
-def laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER):
+def laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER,
+                      amp_w=None):
     """Posterior-mode coherence pz1 = sigmoid(y_hat_test) per condition. Returns {c: (J,)}."""
     out = {}
     for c in cond_data:
-        _, y_hat, _ = laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)
+        _, y_hat, _ = laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker,
+                                    amp_w=amp_w)
         out[c] = 1.0 / (1.0 + np.exp(-y_hat[:cond_data[c]['J']]))
     return out
 
@@ -327,24 +370,30 @@ def _ratings_free_cond_data(geom):
                  'logpdf_nkl': jnp.zeros((0, J)),
                  'J': J,
                  'D': J + int(geom['x_train_cond'][c].shape[0]),
-                 'speaker': geom.get('speaker', 'rsa')}
+                 'speaker': geom.get('speaker', 'rsa'),
+                 'coord_sd': geom.get('coord_sd')}
     return cd
 
 
-def prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER):
+def prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker=BETA_SPEAKER,
+                    amp_w=None):
     """Ratings-free coherence-mode pz1 per condition (GP + training utterances only)."""
     return laplace_pz1_modes(_ratings_free_cond_data(geom),
-                             length_scale, mu_0, output_scale, beta_speaker)
+                             length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
 
 
-def rbf_cross(A, B, length_scale, output_scale):
-    """RBF cross-covariance between two point sets, (len(A), len(B)); no jitter."""
+def rbf_cross(A, B, length_scale, output_scale, amp_A=None, amp_B=None):
+    """RBF cross-covariance between two point sets, (len(A), len(B)); no jitter.
+    amp_A / amp_B: per-point amplitude multipliers on output_scale (both or neither)."""
     d2 = jnp.sum((jnp.asarray(A)[:, None, :] - jnp.asarray(B)[None, :, :]) ** 2, axis=-1)
-    return output_scale ** 2 * jnp.exp(-d2 / (2 * length_scale ** 2))
+    K = output_scale ** 2 * jnp.exp(-d2 / (2 * length_scale ** 2))
+    if amp_A is not None:
+        K = K * (amp_A[:, None] * amp_B[None, :])
+    return K
 
 
 def gp_coherence_field(geom, c, length_scale, mu_0, output_scale, X_query,
-                       beta_speaker=BETA_SPEAKER):
+                       beta_speaker=BETA_SPEAKER, amp_w=None):
     """Coherence field pz1 for one condition, evaluated at arbitrary query points.
 
     Ratings-free Laplace mode of GP + speaker over the condition's training
@@ -356,11 +405,14 @@ def gp_coherence_field(geom, c, length_scale, mu_0, output_scale, X_query,
         # is the GP prior mean everywhere
         return np.full(int(np.asarray(X_query).shape[0]), 1.0 / (1.0 + np.exp(-mu_0)))
     cd = _ratings_free_cond_data(geom)[c]
-    _, y_hat, _ = laplace_log_Z(cd, length_scale, mu_0, output_scale, beta_speaker)
+    _, y_hat, _ = laplace_log_Z(cd, length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
     y_tr = jnp.asarray(y_hat[geom['J']:])
     x_tr = geom['x_train_cond'][c]
-    K_tr = rbf_kernel(x_tr, length_scale, output_scale)
-    K_q  = rbf_cross(X_query, x_tr, length_scale, output_scale)
+    w, coord_sd = _amp_args(amp_w, x_tr, geom.get('coord_sd'))
+    amp_tr = amp_multiplier(x_tr, w, coord_sd)
+    amp_q  = amp_multiplier(jnp.asarray(X_query), w, coord_sd)
+    K_tr = rbf_kernel(x_tr, length_scale, output_scale, amp=amp_tr)
+    K_q  = rbf_cross(X_query, x_tr, length_scale, output_scale, amp_A=amp_q, amp_B=amp_tr)
     y_q  = mu_0 + K_q @ jnp.linalg.solve(K_tr, y_tr - mu_0)
     return np.asarray(jax.nn.sigmoid(y_q))
 
@@ -406,7 +458,7 @@ def fit_link_shapes_shared(responses_cond, pz1_cond):
 
 def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_scale,
                               n_alt=1, beta_speaker=BETA_SPEAKER, return_shapes=False,
-                              shared_shapes=False):
+                              shared_shapes=False, amp_w=None):
     """Summed Laplace log Z at theta with the linking shapes PROFILED OUT.
 
     n_alt=1 (default, MCMC-notebook analog): fit the shapes once to the
@@ -421,14 +473,15 @@ def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_s
     (fit_link_shapes_shared) -> only the coherence field distinguishes features.
     """
     _fit = fit_link_shapes_shared if shared_shapes else fit_link_shapes
-    pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker)
+    pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
     shapes = _fit(responses_cond, pz1)
     for _ in range(n_alt - 1):
         cond_data = prepare_all_conditions(geom, responses_cond, link_shapes=shapes)
-        pz1 = laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker)
+        pz1 = laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker,
+                                amp_w=amp_w)
         shapes = _fit(responses_cond, pz1)
     cond_data = prepare_all_conditions(geom, responses_cond, link_shapes=shapes)
-    ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker)
+    ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
     if return_shapes:
         return ll, shapes, cond_data
     return ll
@@ -454,28 +507,30 @@ def prepare_condition_zoib(geom, c, responses_c, link_theta):
             'logpdf_kl': lp_kl, 'logpdf_nkl': lp_nkl,
             'J': geom['J'],
             'D': geom['J'] + int(geom['x_train_cond'][c].shape[0]),
-            'speaker': geom.get('speaker', 'rsa')}
+            'speaker': geom.get('speaker', 'rsa'),
+            'coord_sd': geom.get('coord_sd')}
 
 
 def total_log_lik_zoib(geom, responses_cond, length_scale, mu_0, output_scale,
-                       beta_speaker=BETA_SPEAKER, link_init=None, return_link=False):
+                       beta_speaker=BETA_SPEAKER, link_init=None, return_link=False,
+                       amp_w=None):
     """Summed Laplace log Z at theta with the per-feature ZOIB linking PROFILED OUT.
 
     responses_cond: RAW ratings. link_init: optional (J, 8) warm start for the
     linking fit (the fit always also tries its data-driven and random starts).
     Returns ll, or (ll, link_theta, cond_data) with return_link=True."""
     import linking as lk
-    pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker)
+    pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
     link_theta, _ = lk.fit(responses_cond, pz1, init=link_init)
     cond_data = {c: prepare_condition_zoib(geom, c, responses_cond[c], link_theta) for c in responses_cond}
-    ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker)
+    ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker, amp_w=amp_w)
     if return_link:
         return ll, link_theta, cond_data
     return ll
 
 
 def conditional_ratings_log_lik(geom, responses_cond, length_scale, mu_0, output_scale,
-                                beta_speaker=BETA_SPEAKER):
+                                beta_speaker=BETA_SPEAKER, amp_w=None):
     """Summed log p(ratings | utterances, theta): Laplace log Z of the full posterior
     minus the ratings-free log Z (GP prior + speaker only), per group, with the
     linking shapes profiled at this theta.
@@ -488,12 +543,14 @@ def conditional_ratings_log_lik(geom, responses_cond, length_scale, mu_0, output
     """
     _, _, cond_data = total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0,
                                                 output_scale, beta_speaker=beta_speaker,
-                                                return_shapes=True)
+                                                return_shapes=True, amp_w=amp_w)
     free = _ratings_free_cond_data(geom)
     ll = 0.0
     for c in cond_data:
-        ll += (laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker)[0]
-               - laplace_log_Z(free[c], length_scale, mu_0, output_scale, beta_speaker)[0])
+        ll += (laplace_log_Z(cond_data[c], length_scale, mu_0, output_scale, beta_speaker,
+                             amp_w=amp_w)[0]
+               - laplace_log_Z(free[c], length_scale, mu_0, output_scale, beta_speaker,
+                               amp_w=amp_w)[0])
     return ll
 
 
@@ -554,6 +611,12 @@ UB_B  = np.append(UB,  np.log(30.0))
 PLB_B = np.append(PLB, np.log(1.0))
 PUB_B = np.append(PUB, np.log(10.0))
 
+# Amplitude weights amp_w (fit_amp=True): one coordinate per embedding dimension,
+# appended LAST, prior N(0, AMP_PRIOR_SD^2) centred on the stationary model.
+# |amp_w| = 3 already implies sigma ratios of ~e^12 across the ~4-SD span of the space.
+AMP_X0, AMP_LB, AMP_UB, AMP_PLB, AMP_PUB = 0.0, -3.0, 3.0, -1.0, 1.0
+def log_prior_amp(amp_w):       return float(-0.5 * np.sum((np.asarray(amp_w) / AMP_PRIOR_SD) ** 2))
+
 
 def _patch_pyvbmc_varg_squeeze():
     """pyVBMC numpy-compat fix: _gp_log_joint can return varG as a (1,1) array,
@@ -582,7 +645,7 @@ def _patch_pyvbmc_varg_squeeze():
 # ---------------------------------------------------------------------------
 def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
                     fit_beta=True, free_shapes=True, n_alt=1, shared_shapes=False,
-                    link='free', counter=None, verbose=True):
+                    link='free', fit_amp=False, counter=None, verbose=True):
     """Assemble the VBMC log-joint objective and its coordinate spec.
 
     free_shapes=True  -> geom_or_cond_data is `geom`, `responses_cond` is required,
@@ -598,6 +661,8 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
     ls_fixed None -> length scale is a fitted coordinate; a float pins it (null model).
     fit_beta      -> whether the RSA speaker rationality beta is a fitted coordinate;
                      when False it is held at BETA_SPEAKER (its design value).
+    fit_amp       -> fit the non-stationary amplitude weights amp_w (one per embedding
+                     dimension, appended last); False keeps the stationary kernel.
 
     Returns (log_joint, coord_spec) where coord_spec is a dict with the box arrays
     (x0, lb, ub, plb, pub) and the flags, used by _run_vbmc to slice samples.
@@ -616,11 +681,23 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
     keep = ([0] if fit_ls else []) + [1, 2] + ([3] if fit_beta else [])
     x0  = base_x0[keep].astype(float)
     lb, ub, plb, pub = base_lb[keep], base_ub[keep], base_plb[keep], base_pub[keep]
+    # embedding dimension (geom, or a cond_data dict when free_shapes=False)
+    if free_shapes:
+        n_amp = int(np.asarray(geom_or_cond_data['x_test']).shape[1])
+    else:
+        n_amp = int(np.asarray(next(iter(geom_or_cond_data.values()))['X_all']).shape[1])
+    if fit_amp:
+        # order: [log_ls?, mu_0, log_sigma, log_beta?, amp_w_1..amp_w_D]
+        x0  = np.append(x0,  np.full(n_amp, AMP_X0))
+        lb  = np.append(lb,  np.full(n_amp, AMP_LB));  ub  = np.append(ub,  np.full(n_amp, AMP_UB))
+        plb = np.append(plb, np.full(n_amp, AMP_PLB)); pub = np.append(pub, np.full(n_amp, AMP_PUB))
     coord_spec = dict(fit_ls=fit_ls, fit_beta=fit_beta, ls_fixed=ls_fixed,
+                      fit_amp=fit_amp, n_amp=n_amp,
                       x0=x0, lb=lb, ub=ub, plb=plb, pub=pub)
 
     def _unpack(phi):
-        """phi (active coords) -> (ls, mu_0, sigma, beta) in natural units."""
+        """phi (active coords) -> (ls, mu_0, sigma, beta, amp_w) in natural units
+        (amp_w is None when not fitted, i.e. the stationary kernel)."""
         phi = np.asarray(phi).ravel()
         i = 0
         if fit_ls:
@@ -629,32 +706,40 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
             ls = float(ls_fixed)
         mu_0 = float(phi[i]); i += 1
         sigma = float(np.exp(phi[i])); i += 1
-        beta = float(np.exp(phi[i])) if fit_beta else float(BETA_SPEAKER)
-        return ls, mu_0, sigma, beta
+        if fit_beta:
+            beta = float(np.exp(phi[i])); i += 1
+        else:
+            beta = float(BETA_SPEAKER)
+        amp_w = phi[i:i + n_amp].astype(float) if fit_amp else None
+        return ls, mu_0, sigma, beta, amp_w
 
     def log_joint(phi):
-        ls, mu_0, sigma, beta = _unpack(phi)
+        ls, mu_0, sigma, beta, amp_w = _unpack(phi)
         counter[0] += 1
         if link == 'zoib':
             ll = total_log_lik_zoib(geom_or_cond_data, responses_cond, ls, mu_0, sigma,
-                                    beta_speaker=beta)
+                                    beta_speaker=beta, amp_w=amp_w)
         elif free_shapes:
             ll = total_log_lik_free_shapes(geom_or_cond_data, responses_cond, ls, mu_0,
                                            sigma, n_alt=n_alt, beta_speaker=beta,
-                                           shared_shapes=shared_shapes)
+                                           shared_shapes=shared_shapes, amp_w=amp_w)
         else:
-            ll = total_log_lik(geom_or_cond_data, ls, mu_0, sigma, beta_speaker=beta)
+            ll = total_log_lik(geom_or_cond_data, ls, mu_0, sigma, beta_speaker=beta,
+                               amp_w=amp_w)
         lp = log_prior_mu(mu_0) + log_prior_sigma(np.log(sigma))
         if fit_ls:
             lp += log_prior_ls(np.log(ls))
         if fit_beta:
             lp += log_prior_beta(np.log(beta))
+        if fit_amp:
+            lp += log_prior_amp(amp_w)
         val = ll + lp
         if verbose:
             ls_tag = f"{ls:.3f}" + ("" if fit_ls else " (pinned)")
             beta_tag = f"  beta={beta:.3f}" + ("" if fit_beta else " (fixed)")
+            amp_tag = f"  amp_w={np.round(amp_w, 3).tolist()}" if fit_amp else ""
             print(f"  eval {counter[0]:3d}: ls={ls_tag}  mu_0={mu_0:+.3f}  "
-                  f"sigma={sigma:.3f}{beta_tag}  log_lik={ll:.1f}  log_joint={val:.1f}")
+                  f"sigma={sigma:.3f}{beta_tag}{amp_tag}  log_lik={ll:.1f}  log_joint={val:.1f}")
         return val, TARGET_NOISE
 
     return log_joint, coord_spec
@@ -695,15 +780,21 @@ def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples, seed=No
     mu0_samples = phi_samples[:, i]; i += 1
     sigma_samples = np.exp(phi_samples[:, i]); i += 1
     if coord_spec['fit_beta']:
-        beta_samples = np.exp(phi_samples[:, i])
+        beta_samples = np.exp(phi_samples[:, i]); i += 1
     else:
         # beta held at its design value; callers that model NO speaker (e.g. the
         # aligned literal listener) overwrite this with NaN after the fit.
         beta_samples = np.full(n, float(BETA_SPEAKER))
+    # amplitude weights: (n, D); zeros (= stationary kernel) when not fitted
+    if coord_spec['fit_amp']:
+        amp_w_samples = phi_samples[:, i:i + coord_spec['n_amp']]
+    else:
+        amp_w_samples = np.zeros((n, coord_spec['n_amp']))
 
     return {
         'ls_samples': ls_samples, 'mu0_samples': mu0_samples,
         'sigma_samples': sigma_samples, 'beta_samples': beta_samples,
+        'amp_w_samples': amp_w_samples,
         'elbo': float(stats['elbo']), 'elbo_sd': float(stats['elbo_sd']),
         'func_count': int(stats['func_count']),
         'convergence_status': str(stats['convergence_status']),
@@ -713,8 +804,8 @@ def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples, seed=No
 
 
 def run_vbmc(geom, responses_cond=None, *, ls_fixed=None, fit_beta=True,
-             free_shapes=True, n_alt=1, shared_shapes=False, link='free', max_evals=None,
-             x0=None, n_posterior_samples=int(1e4), verbose=True, seed=None):
+             free_shapes=True, n_alt=1, shared_shapes=False, link='free', fit_amp=False,
+             max_evals=None, x0=None, n_posterior_samples=int(1e4), verbose=True, seed=None):
     """Fit the VBMC posterior over the GP hyperparameters, with beta fitted by default.
 
     Coordinates fitted (in order): length_scale (unless ls_fixed pins it), mu_0,
@@ -732,11 +823,14 @@ def run_vbmc(geom, responses_cond=None, *, ls_fixed=None, fit_beta=True,
 
     seed: fixed RNG seed for reproducibility (pyVBMC uses legacy np.random; the
     objective is deterministic), so the same seed reproduces the fit exactly.
+
+    fit_amp: also fit the non-stationary amplitude weights (amp_w_samples, (n, D));
+    otherwise amp_w_samples is all zeros (the stationary kernel).
     """
     if max_evals is None:
-        max_evals = 200 if fit_beta else 150
+        max_evals = (200 if fit_beta else 150) + (100 if fit_amp else 0)
     log_joint, coord_spec = build_log_joint(
         geom, responses_cond, ls_fixed=ls_fixed, fit_beta=fit_beta,
         free_shapes=free_shapes, n_alt=n_alt, shared_shapes=shared_shapes, link=link,
-        verbose=verbose)
+        fit_amp=fit_amp, verbose=verbose)
     return _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples, seed=seed)

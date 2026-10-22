@@ -114,8 +114,11 @@ def _base_geom(df, coords):
     test_feature_names = list(test_df['feature'].values)
     x_test = jnp.array(np.stack([coords[f] for f in test_feature_names]))
     test_trait = list(test_df['category'].values)
+    X_feat = df[['x_2d', 'y_2d']].values
+    coord_sd = float(np.sqrt(np.mean((X_feat - X_feat.mean(0)) ** 2)))   # pooled over ALL features
     return {'x_test': x_test, 'test_feature_names': test_feature_names,
-            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d'}
+            'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d',
+            'coord_sd': coord_sd}
 
 
 def _clip_ratings(R, clip_interior=True):

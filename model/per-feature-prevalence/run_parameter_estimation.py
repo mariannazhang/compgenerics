@@ -21,6 +21,8 @@ Usage:
     python run_parameter_estimation.py              # all studies
     python run_parameter_estimation.py study9       # one study (study6|study8|study9|study9-percond)
     python run_parameter_estimation.py study9-zoib  # per-feature ZOIB linking -> results/study9-fit-zoib/
+    python run_parameter_estimation.py study9-zoib-amp  # + non-stationary amplitude (amp_w fitted)
+                                                    #   -> results/study9-fit-zoib-amp/
                                                     # (also study6-zoib -> results/study6-fit-zoib/
                                                     #  + ablations -> results/study6-ablations-zoib/)
     MAX_EVALS=200 python run_parameter_estimation.py study9   # override eval budget (default 400)
@@ -48,6 +50,7 @@ MAX_EVALS = int(os.environ.get("MAX_EVALS", "400"))
 # reproducible. Override with SEED=... in the environment.
 SEED = int(os.environ.get("SEED", "37"))
 SAMPLE_KEYS = ('ls_samples', 'mu0_samples', 'sigma_samples', 'beta_samples')
+OPTIONAL_SAMPLE_KEYS = ('amp_w_samples',)   # absent from caches written before the amplitude model
 META_KEYS   = ('elbo', 'elbo_sd', 'func_count', 'convergence_status', 'runtime_s')
 
 
@@ -59,12 +62,12 @@ def load_or_fit(path, fit_fn):
     fit dict with SAMPLE_KEYS + META_KEYS."""
     if os.path.exists(path):
         z = np.load(path, allow_pickle=True)
-        fit = {k: z[k] for k in SAMPLE_KEYS}
+        fit = {k: z[k] for k in SAMPLE_KEYS + OPTIONAL_SAMPLE_KEYS if k in z.files}
         fit.update(json.loads(str(z['meta'])))
         print(f"  loaded cached posterior: {path}  ({fit['convergence_status']})")
         return fit
     fit = fit_fn()
-    np.savez_compressed(path, **{k: fit[k] for k in SAMPLE_KEYS},
+    np.savez_compressed(path, **{k: fit[k] for k in SAMPLE_KEYS + OPTIONAL_SAMPLE_KEYS if k in fit},
                         meta=json.dumps({k: fit[k] for k in META_KEYS}))
     print(f"  saved posterior: {path}  ({fit['convergence_status']}, "
           f"{fit['func_count']} evals, {fit['runtime_s']:.0f}s)")
@@ -261,19 +264,22 @@ def run_study9_percond():
 # Same pipeline as fit_full_and_artifacts, but with link='zoib' and RAW ratings
 # (no half-bin nudge). Writes ONLY to results/<study>-fit-zoib/, so the original
 # free-shape fits in results/<study>-fit/ are never touched.
-def export_zoib_link(results_dir, geom, responses_raw, theta, test_feature_names, test_trait):
+def export_zoib_link(results_dir, geom, responses_raw, theta, test_feature_names, test_trait,
+                     amp_w=None):
     """Fit the ZOIB linking at the posterior-median theta; write
-    fitted-link-zoib.{npz,csv}. Returns (link_theta, cond_data)."""
+    fitted-link-zoib.{npz,csv}. Returns (link_theta, cond_data).
+    amp_w: posterior-median amplitude weights (None = stationary kernel)."""
     import linking as lk
     ls, mu0, sig, beta = theta
     _, link_theta, cond_data = inf.total_log_lik_zoib(
-        geom, responses_raw, ls, mu0, sig, beta_speaker=beta, return_link=True)
+        geom, responses_raw, ls, mu0, sig, beta_speaker=beta, return_link=True, amp_w=amp_w)
     p = lk.params_to_numpy(lk.unpack(jnp.asarray(link_theta)))
     cols = ['m_kl', 'kappa_kl', 'a_kl', 'b_kl', 'pi0_kl', 'pi1_kl',
             'm_nkl', 'kappa_nkl', 'a_nkl', 'b_nkl', 'pi0_nkl', 'pi1_nkl']
     np.savez_compressed(os.path.join(results_dir, 'fitted-link-zoib.npz'),
                         link_theta=link_theta, feature_names=np.array(test_feature_names),
-                        theta=np.array(theta), **{k: p[k] for k in cols})
+                        theta=np.array(theta), **{k: p[k] for k in cols},
+                        **({} if amp_w is None else {'amp_w': np.asarray(amp_w)}))
     pd.DataFrame({'feature': test_feature_names, 'trait': test_trait, **{k: p[k] for k in cols}}
                  ).round(5).to_csv(os.path.join(results_dir, 'fitted-link-zoib.csv'), index=False)
     print("  saved fitted-link-zoib.{npz,csv}")
@@ -281,17 +287,17 @@ def export_zoib_link(results_dir, geom, responses_raw, theta, test_feature_names
 
 
 def export_zoib_predictions(results_dir, geom, responses_raw, theta, link_theta, cond_data,
-                            test_feature_names, keys, extra_cols=None):
+                            test_feature_names, keys, extra_cols=None, amp_w=None):
     """predictions.csv for the ZOIB fit: ratings-free (pred_prior) and
     ratings-conditioned (pred_posterior) mean ratings under the ZOIB mixture."""
     import linking as lk
     ls, mu0, sig, beta = theta
     J = geom['J']
     p = lk.unpack(jnp.asarray(link_theta))
-    pz1_prior = inf.prior_pz1_modes(geom, ls, mu0, sig, beta_speaker=beta)
+    pz1_prior = inf.prior_pz1_modes(geom, ls, mu0, sig, beta_speaker=beta, amp_w=amp_w)
     rows, n_bad = [], 0
     for k in keys:
-        _, y_hat, ok = inf.laplace_log_Z(cond_data[k], ls, mu0, sig, beta_speaker=beta)
+        _, y_hat, ok = inf.laplace_log_Z(cond_data[k], ls, mu0, sig, beta_speaker=beta, amp_w=amp_w)
         n_bad += (not ok)
         pz1_post = 1.0 / (1.0 + np.exp(-y_hat[:J]))
         pred_prior = lk.expected_rating(p, pz1_prior[k])
@@ -331,6 +337,37 @@ def fit_zoib_and_artifacts(results_dir, geom, responses_raw, keys,
                                              test_feature_names, test_trait)
     export_zoib_predictions(results_dir, geom, responses_raw, theta, link_theta, cond_data,
                             test_feature_names, keys, extra_cols)
+
+
+def run_study9_zoib_amp():
+    """Study 9 ZOIB fit with the non-stationary amplitude: log sigma(x) = log sigma_0 +
+    amp_w . x / coord_sd, amp_w ~ N(0, 0.5^2) fitted alongside (ls, mu_0, sigma, beta).
+    Compare its ELBO with the stationary fit in results/study9-fit-zoib/posterior.npz."""
+    print("\n===== STUDY 9 (prereg, joint) -- ZOIB linking + non-stationary amplitude =====")
+    rdir = 'results/study9-fit-zoib-amp'
+    os.makedirs(rdir, exist_ok=True)
+    geom = inf.load_geometry()
+    responses_raw, _ = inf.load_responses('../../data/study9_prereg.csv', clip_interior=False)
+    fit = load_or_fit(
+        os.path.join(rdir, 'posterior.npz'),
+        lambda: inf.run_vbmc(geom, responses_raw, link='zoib', fit_amp=True,
+                             max_evals=MAX_EVALS, seed=SEED))
+    theta = _median_theta(fit)
+    amp_w = np.median(fit['amp_w_samples'], axis=0)
+    lo, hi = np.percentile(fit['amp_w_samples'], [2.5, 97.5], axis=0)
+    print(f"  posterior median: ls={theta[0]:.3f} mu_0={theta[1]:+.3f} "
+          f"sigma={theta[2]:.3f} beta={theta[3]:.3f}")
+    for d in range(len(amp_w)):
+        print(f"    amp_w[{d}] = {amp_w[d]:+.3f}  (95% [{lo[d]:+.2f}, {hi[d]:+.2f}])")
+    stat_path = 'results/study9-fit-zoib/posterior.npz'
+    if os.path.exists(stat_path):
+        elbo_stat = json.loads(str(np.load(stat_path, allow_pickle=True)['meta']))['elbo']
+        print(f"  ELBO amplitude = {fit['elbo']:.1f}  vs stationary = {elbo_stat:.1f}  "
+              f"(diff {fit['elbo'] - elbo_stat:+.1f})")
+    link_theta, cond_data = export_zoib_link(rdir, geom, responses_raw, theta,
+                                             geom['test_feature_names'], geom['test_trait'], amp_w=amp_w)
+    export_zoib_predictions(rdir, geom, responses_raw, theta, link_theta, cond_data,
+                            geom['test_feature_names'], list(inf.CONDITIONS), amp_w=amp_w)
 
 
 def run_study9_zoib():
@@ -391,6 +428,7 @@ STUDIES = {
     'study9':          run_study9,
     'study9-percond':  run_study9_percond,
     'study9-zoib':     run_study9_zoib,
+    'study9-zoib-amp': run_study9_zoib_amp,
     'study6-zoib':     run_study6_zoib,
 }
 
