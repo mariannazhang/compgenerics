@@ -34,7 +34,7 @@ import jax.numpy as jnp
 from jax.scipy.stats import beta as jbeta
 
 from model_jax import (rbf_kernel, p_u_given_y, p_u_given_y_literal, _mvn_logpdf_chol,
-                       fit_beta_mixtures_all_features)
+                       fit_beta_mixtures_all_features, _fit_one_feature)
 
 
 # ---------------------------------------------------------------------------
@@ -380,8 +380,33 @@ def fit_link_shapes(responses_cond, pz1_cond):
     return np.clip(shapes, *SHAPE_CLIP)
 
 
+def fit_link_shapes_shared(responses_cond, pz1_cond):
+    """Beta-mixture shapes SHARED across ALL features (and conditions): one
+    (a_kl, b_kl, a_nkl, b_nkl) fit to the pooled (rating, pz1) of every
+    feature/participant, then tiled to (J, 4).
+
+    Contrast with fit_link_shapes (per-feature): here the linking function CANNOT
+    encode a feature's mean, so the only thing that can distinguish features is the
+    coherence pz1 -> forces the GP field to carry the feature-level variance. Used
+    to test whether distance-based generalization survives when the linking
+    function can't absorb the feature variance.
+    """
+    R  = np.concatenate([np.asarray(responses_cond[c]) for c in responses_cond], axis=0)   # (N, J)
+    TH = np.concatenate([np.tile(np.asarray(pz1_cond[c])[None, :], (int(responses_cond[c].shape[0]), 1))
+                         for c in responses_cond], axis=0)                                  # (N, J)
+    r_flat  = R.reshape(-1)
+    th_flat = np.clip(TH.reshape(-1), 1e-6, 1.0 - 1e-6)
+    lp = np.asarray(_fit_one_feature(jnp.array(r_flat), jnp.array(th_flat)))                # (4,)
+    a1, b1, a2, b2 = np.exp(lp)
+    if a1 / (a1 + b1) < a2 / (a2 + b2):        # kl = higher-mean component
+        a1, b1, a2, b2 = a2, b2, a1, b1
+    J = np.asarray(pz1_cond[next(iter(pz1_cond))]).shape[0]
+    return np.clip(np.tile([a1, b1, a2, b2], (J, 1)), *SHAPE_CLIP)
+
+
 def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_scale,
-                              n_alt=1, beta_speaker=BETA_SPEAKER, return_shapes=False):
+                              n_alt=1, beta_speaker=BETA_SPEAKER, return_shapes=False,
+                              shared_shapes=False):
     """Summed Laplace log Z at theta with the linking shapes PROFILED OUT.
 
     n_alt=1 (default, MCMC-notebook analog): fit the shapes once to the
@@ -390,17 +415,62 @@ def total_log_lik_free_shapes(geom, responses_cond, length_scale, mu_0, output_s
     shapes (see the non-monotonicity caveat above). Deterministic given
     (theta, n_alt). Returns ll, or (ll, shapes, cond_data) with
     return_shapes=True.
+
+    shared_shapes=False (default): per-feature Beta shapes (fit_link_shapes).
+    shared_shapes=True: ONE Beta-pair shared across all features
+    (fit_link_shapes_shared) -> only the coherence field distinguishes features.
     """
+    _fit = fit_link_shapes_shared if shared_shapes else fit_link_shapes
     pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker)
-    shapes = fit_link_shapes(responses_cond, pz1)
+    shapes = _fit(responses_cond, pz1)
     for _ in range(n_alt - 1):
         cond_data = prepare_all_conditions(geom, responses_cond, link_shapes=shapes)
         pz1 = laplace_pz1_modes(cond_data, length_scale, mu_0, output_scale, beta_speaker)
-        shapes = fit_link_shapes(responses_cond, pz1)
+        shapes = _fit(responses_cond, pz1)
     cond_data = prepare_all_conditions(geom, responses_cond, link_shapes=shapes)
     ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker)
     if return_shapes:
         return ll, shapes, cond_data
+    return ll
+
+
+# ---------------------------------------------------------------------------
+# Per-feature ZOIB linking (linking.py), profiled like the free shapes above
+# ---------------------------------------------------------------------------
+# Same profile-likelihood recipe as total_log_lik_free_shapes (n_alt=1): fit the
+# linking to the ratings-free pz1, then score log Z with the ratings under it.
+# Only the two precomputed class log-likelihood arrays of each cd differ; the
+# Laplace machinery is untouched. Ratings must be RAW (clip_interior=False):
+# linking.encode rejects half-bin-nudged ones. The linking fit's weak prior on
+# the point masses enters the fit only, not log Z.
+def prepare_condition_zoib(geom, c, responses_c, link_theta):
+    """prepare_condition() for the ZOIB linking: log p(r | kl), log p(r | nkl) per
+    (i, j) from linking.component_logliks. link_theta: (J, 8) unconstrained."""
+    import linking as lk
+    r, cls = lk.encode(np.asarray(responses_c))
+    lp_kl, lp_nkl = lk.component_logliks(lk.unpack(jnp.asarray(link_theta)), r, cls)
+    return {'X_all': jnp.vstack([geom['x_test'], geom['x_train_cond'][c]]),
+            'u_train': geom['u_train_cond'][c],
+            'logpdf_kl': lp_kl, 'logpdf_nkl': lp_nkl,
+            'J': geom['J'],
+            'D': geom['J'] + int(geom['x_train_cond'][c].shape[0]),
+            'speaker': geom.get('speaker', 'rsa')}
+
+
+def total_log_lik_zoib(geom, responses_cond, length_scale, mu_0, output_scale,
+                       beta_speaker=BETA_SPEAKER, link_init=None, return_link=False):
+    """Summed Laplace log Z at theta with the per-feature ZOIB linking PROFILED OUT.
+
+    responses_cond: RAW ratings. link_init: optional (J, 8) warm start for the
+    linking fit (the fit always also tries its data-driven and random starts).
+    Returns ll, or (ll, link_theta, cond_data) with return_link=True."""
+    import linking as lk
+    pz1 = prior_pz1_modes(geom, length_scale, mu_0, output_scale, beta_speaker)
+    link_theta, _ = lk.fit(responses_cond, pz1, init=link_init)
+    cond_data = {c: prepare_condition_zoib(geom, c, responses_cond[c], link_theta) for c in responses_cond}
+    ll = total_log_lik(cond_data, length_scale, mu_0, output_scale, beta_speaker)
+    if return_link:
+        return ll, link_theta, cond_data
     return ll
 
 
@@ -511,7 +581,8 @@ def _patch_pyvbmc_varg_squeeze():
 # uses coord_spec to slice the posterior samples back into natural-unit arrays.
 # ---------------------------------------------------------------------------
 def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
-                    fit_beta=True, free_shapes=True, n_alt=1, counter=None, verbose=True):
+                    fit_beta=True, free_shapes=True, n_alt=1, shared_shapes=False,
+                    link='free', counter=None, verbose=True):
     """Assemble the VBMC log-joint objective and its coordinate spec.
 
     free_shapes=True  -> geom_or_cond_data is `geom`, `responses_cond` is required,
@@ -519,6 +590,10 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
                          OUT (re-fit) at every theta (via total_log_lik_free_shapes).
     free_shapes=False -> geom_or_cond_data is `cond_data` with the linking shapes
                          baked in; `responses_cond` is ignored (via total_log_lik).
+    link='free'       -> the original per-feature Beta-mixture shapes (default).
+    link='zoib'       -> the per-feature ZOIB linking (linking.py), profiled at every
+                         theta via total_log_lik_zoib; requires free_shapes=True and
+                         RAW ratings in responses_cond.
 
     ls_fixed None -> length scale is a fitted coordinate; a float pins it (null model).
     fit_beta      -> whether the RSA speaker rationality beta is a fitted coordinate;
@@ -529,6 +604,10 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
     """
     counter = counter if counter is not None else [0]
     fit_ls = ls_fixed is None
+    if link not in ('free', 'zoib'):
+        raise ValueError(f"build_log_joint: unknown link {link!r}")
+    if link == 'zoib' and not free_shapes:
+        raise ValueError("build_log_joint: link='zoib' profiles its own linking; use free_shapes=True")
 
     # ---- assemble the box for the active coordinates --------------------
     # order: [log_ls?, mu_0, log_sigma, log_beta?]
@@ -556,9 +635,13 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
     def log_joint(phi):
         ls, mu_0, sigma, beta = _unpack(phi)
         counter[0] += 1
-        if free_shapes:
+        if link == 'zoib':
+            ll = total_log_lik_zoib(geom_or_cond_data, responses_cond, ls, mu_0, sigma,
+                                    beta_speaker=beta)
+        elif free_shapes:
             ll = total_log_lik_free_shapes(geom_or_cond_data, responses_cond, ls, mu_0,
-                                           sigma, n_alt=n_alt, beta_speaker=beta)
+                                           sigma, n_alt=n_alt, beta_speaker=beta,
+                                           shared_shapes=shared_shapes)
         else:
             ll = total_log_lik(geom_or_cond_data, ls, mu_0, sigma, beta_speaker=beta)
         lp = log_prior_mu(mu_0) + log_prior_sigma(np.log(sigma))
@@ -577,16 +660,26 @@ def build_log_joint(geom_or_cond_data, responses_cond=None, *, ls_fixed=None,
     return log_joint, coord_spec
 
 
-def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples):
+def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples, seed=None):
     """pyVBMC driver over the active-coordinate box in coord_spec. Slices the
     posterior samples back into natural-unit arrays, filling pinned/fixed
     coordinates with their constants so the return dict (and saved .npz) has the
-    same keys regardless of which coordinates were fitted."""
+    same keys regardless of which coordinates were fitted.
+
+    seed: if given, np.random.seed(seed) is set just before optimize(). pyVBMC
+    draws all its randomness from legacy np.random, and the Laplace objective is
+    deterministic (no jax/numpy sampling), so a fixed seed makes the whole fit
+    bit-for-bit reproducible."""
     from pyvbmc import VBMC
     import time
     _patch_pyvbmc_varg_squeeze()
     t0 = time.time()
     x0 = coord_spec['x0'] if x0 is None else np.asarray(x0, dtype=float)
+    # VBMC snapshots np.random.get_state() at CONSTRUCTION (vbmc.py: self.random_state
+    # = np.random.get_state()), so the seed must be set BEFORE VBMC(...), not before
+    # optimize().
+    if seed is not None:
+        np.random.seed(seed)
     vbmc = VBMC(log_joint, x0,
                 coord_spec['lb'], coord_spec['ub'], coord_spec['plb'], coord_spec['pub'],
                 options={'specify_target_noise': True, 'max_fun_evals': max_evals})
@@ -611,7 +704,8 @@ def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples):
     return {
         'ls_samples': ls_samples, 'mu0_samples': mu0_samples,
         'sigma_samples': sigma_samples, 'beta_samples': beta_samples,
-        'elbo': float(stats['elbo']), 'func_count': int(stats['func_count']),
+        'elbo': float(stats['elbo']), 'elbo_sd': float(stats['elbo_sd']),
+        'func_count': int(stats['func_count']),
         'convergence_status': str(stats['convergence_status']),
         'runtime_s': time.time() - t0,
         'result': result, 'stats': stats,
@@ -619,8 +713,8 @@ def _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples):
 
 
 def run_vbmc(geom, responses_cond=None, *, ls_fixed=None, fit_beta=True,
-             free_shapes=True, max_evals=None, n_alt=1, x0=None,
-             n_posterior_samples=int(1e4), verbose=True):
+             free_shapes=True, n_alt=1, shared_shapes=False, link='free', max_evals=None,
+             x0=None, n_posterior_samples=int(1e4), verbose=True, seed=None):
     """Fit the VBMC posterior over the GP hyperparameters, with beta fitted by default.
 
     Coordinates fitted (in order): length_scale (unless ls_fixed pins it), mu_0,
@@ -635,10 +729,14 @@ def run_vbmc(geom, responses_cond=None, *, ls_fixed=None, fit_beta=True,
     convergence_status / runtime_s and the raw (result, stats) pyVBMC objects.
     Pinned length scale -> ls_samples is that constant; unfitted beta ->
     beta_samples is BETA_SPEAKER (overwrite with NaN if the model has no speaker).
+
+    seed: fixed RNG seed for reproducibility (pyVBMC uses legacy np.random; the
+    objective is deterministic), so the same seed reproduces the fit exactly.
     """
     if max_evals is None:
         max_evals = 200 if fit_beta else 150
     log_joint, coord_spec = build_log_joint(
         geom, responses_cond, ls_fixed=ls_fixed, fit_beta=fit_beta,
-        free_shapes=free_shapes, n_alt=n_alt, verbose=verbose)
-    return _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples)
+        free_shapes=free_shapes, n_alt=n_alt, shared_shapes=shared_shapes, link=link,
+        verbose=verbose)
+    return _run_vbmc(log_joint, coord_spec, max_evals, x0, n_posterior_samples, seed=seed)

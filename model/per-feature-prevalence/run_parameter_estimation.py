@@ -2,8 +2,10 @@
 
 One entry point for the whole fitting pipeline. For each study it fits, on the
 PREREGISTERED data, the full model (fitted length scale) and its distance-blind
-null (length scale pinned at LS_FLAT), plus the study-6/8 ablations. beta (RSA
-speaker rationality) is inferred wherever the model has a speaker; the per-feature
+null (length scale pinned at LS_FLAT). Studies 6 and 8 additionally get a
+consistent ablation set: litsem (literal semantics, no speaker/beta), null
+(distance-blind), and notransfer (no utterance channel). beta (RSA speaker
+rationality) is inferred wherever the model has a speaker; the per-feature
 Beta-mixture linking shapes are profiled out at every VBMC evaluation.
 
 Produces, per fit, the same artifacts the notebooks consume (NO plots -- the
@@ -18,6 +20,9 @@ is cheap and only fills what's missing; `rm` a file (or a whole fit dir) to refi
 Usage:
     python run_parameter_estimation.py              # all studies
     python run_parameter_estimation.py study9       # one study (study6|study8|study9|study9-percond)
+    python run_parameter_estimation.py study9-zoib  # per-feature ZOIB linking -> results/study9-fit-zoib/
+                                                    # (also study6-zoib -> results/study6-fit-zoib/
+                                                    #  + ablations -> results/study6-ablations-zoib/)
     MAX_EVALS=200 python run_parameter_estimation.py study9   # override eval budget (default 400)
 
 Runtime is dominated by study 8 (~400 config groups, ~45 min at 400 evals).
@@ -38,8 +43,12 @@ import inference as inf   # sets jax config; import before other jax users
 import studies68 as s68
 
 MAX_EVALS = int(os.environ.get("MAX_EVALS", "400"))
+# Fixed RNG seed for reproducibility: pyVBMC uses legacy np.random and the Laplace
+# objective is deterministic, so a fixed seed makes every fit bit-for-bit
+# reproducible. Override with SEED=... in the environment.
+SEED = int(os.environ.get("SEED", "37"))
 SAMPLE_KEYS = ('ls_samples', 'mu0_samples', 'sigma_samples', 'beta_samples')
-META_KEYS   = ('elbo', 'func_count', 'convergence_status', 'runtime_s')
+META_KEYS   = ('elbo', 'elbo_sd', 'func_count', 'convergence_status', 'runtime_s')
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +138,11 @@ def fit_full_and_artifacts(results_dir, geom, responses_cond, keys,
     # full model: fitted length scale
     fit_f = load_or_fit(
         os.path.join(results_dir, 'fitted-feature-shapes.npz'),
-        lambda: inf.run_vbmc(geom, responses_cond, max_evals=MAX_EVALS))
+        lambda: inf.run_vbmc(geom, responses_cond, max_evals=MAX_EVALS, seed=SEED))
     # distance-blind null: length scale pinned at LS_FLAT
     load_or_fit(
         os.path.join(results_dir, 'fitted-feature-shapes-null.npz'),
-        lambda: inf.run_vbmc(geom, responses_cond, ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS))
+        lambda: inf.run_vbmc(geom, responses_cond, ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS, seed=SEED))
 
     theta = _median_theta(fit_f)
     print(f"  posterior median: ls={theta[0]:.3f} mu_0={theta[1]:+.3f} "
@@ -147,53 +156,65 @@ def fit_full_and_artifacts(results_dir, geom, responses_cond, keys,
 # ---------------------------------------------------------------------------
 # study 6 (prereg): generic / specific / baseline; + ablations
 # ---------------------------------------------------------------------------
+def run_ablations(rdir, loader):
+    """The shared ablation set for studies 6 and 8 (posterior only; the ablations
+    notebooks build their predictions/plots):
+      - litsem     : literal semantics (speaker='literal'), all utterances kept,
+                     no speaker -> beta absent. The paper's null for the whole
+                     RSA+beta apparatus.
+      - null       : distance-blind (length scale pinned at LS_FLAT), beta fitted.
+      - notransfer : every condition loses its utterances -> no channel from
+                     statements to test features; ls pinned, beta absent.
+
+    loader() must return (geom, responses_cond) freshly each call (the litsem /
+    notransfer fits mutate geom in place, so each needs its own copy)."""
+    print(f"  --- ablations -> {rdir} ---")
+    os.makedirs(rdir, exist_ok=True)
+    # widen the beta bound as the main fits do (only affects beta-fitting ablations)
+    inf.UB_B[3], inf.PUB_B[3] = np.log(1000.0), np.log(300.0)
+
+    def fit_litsem():
+        g, r = loader()
+        g['speaker'] = 'literal'
+        fit = inf.run_vbmc(g, r, fit_beta=False, max_evals=MAX_EVALS, seed=SEED)
+        fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], np.nan)   # no beta in this model
+        return fit
+    load_or_fit(os.path.join(rdir, 'posterior-litsem.npz'), fit_litsem)
+
+    def fit_null():
+        g, r = loader()
+        return inf.run_vbmc(g, r, ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS, seed=SEED)
+    load_or_fit(os.path.join(rdir, 'posterior-null.npz'), fit_null)
+
+    def fit_notransfer():
+        g, r = loader()
+        for c in list(g['x_train_cond']):
+            g['x_train_cond'][c] = jnp.zeros((0, 2))
+            g['u_train_cond'][c] = jnp.zeros(0, dtype=jnp.int32)
+            g['train_names_cond'][c] = []
+        return inf.run_vbmc(g, r, ls_fixed=inf.LS_FLAT, fit_beta=False, max_evals=MAX_EVALS, seed=SEED)
+    load_or_fit(os.path.join(rdir, 'posterior-notransfer.npz'), fit_notransfer)
+
+
 def run_study6():
     print("\n===== STUDY 6 (prereg) =====")
     geom, responses_cond = s68.load_study6_prereg()
     keys = list(geom['x_train_cond'])
     fit_full_and_artifacts('results/study6-fit', geom, responses_cond, keys,
                            geom['test_feature_names'], geom['test_trait'])
-    run_study6_ablations()
-
-
-def run_study6_ablations():
-    """literalsem / null / notransfer ablations (posterior only; the ablations
-    notebook builds their predictions/plots)."""
-    print("  --- study 6 ablations ---")
-    rdir = 'results/study6-ablations'
-    os.makedirs(rdir, exist_ok=True)
-    # widen the beta bound as the main fits do (only affects beta-fitting ablations)
-    inf.UB_B[3], inf.PUB_B[3] = np.log(1000.0), np.log(300.0)
-
-    # literalsem: aligned literal listener (literal semantics, no speaker -> no beta)
-    def fit_litsem():
-        g, r = s68.load_study6_prereg()
-        g['speaker'] = 'literal'
-        fit = inf.run_vbmc(g, r, fit_beta=False, max_evals=MAX_EVALS)
-        fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], np.nan)   # no beta in this model
-        return fit
-    load_or_fit(os.path.join(rdir, 'posterior-litsem.npz'), fit_litsem)
-
-    # null: distance-blind (ls pinned), beta fitted
-    def fit_null():
-        g, r = s68.load_study6_prereg()
-        return inf.run_vbmc(g, r, ls_fixed=inf.LS_FLAT, max_evals=MAX_EVALS)
-    load_or_fit(os.path.join(rdir, 'posterior-null.npz'), fit_null)
-
-    # notransfer: every condition loses its utterances -> no channel, beta absent
-    def fit_notransfer():
-        g, r = s68.load_study6_prereg()
-        for c in list(g['x_train_cond']):
-            g['x_train_cond'][c] = jnp.zeros((0, 2))
-            g['u_train_cond'][c] = jnp.zeros(0, dtype=jnp.int32)
-            g['train_names_cond'][c] = []
-        return inf.run_vbmc(g, r, ls_fixed=inf.LS_FLAT, fit_beta=False, max_evals=MAX_EVALS)
-    load_or_fit(os.path.join(rdir, 'posterior-notransfer.npz'), fit_notransfer)
+    run_ablations('results/study6-ablations', s68.load_study6_prereg)
 
 
 # ---------------------------------------------------------------------------
-# study 8 (prereg): ~400 config groups; + literal-listener lesion
+# study 8 (prereg): ~400 config groups; same ablation set as study 6
 # ---------------------------------------------------------------------------
+def _load_study8_geom_resp():
+    """study-8 loader adapter: (geom, responses_cond) only (drops groups_df) so it
+    matches the run_ablations loader contract."""
+    geom, responses_cond, _ = s68.load_study8()
+    return geom, responses_cond
+
+
 def run_study8():
     print("\n===== STUDY 8 (prereg) =====")
     geom, responses_cond, groups_df = s68.load_study8()
@@ -206,22 +227,7 @@ def run_study8():
              for g in keys}
     fit_full_and_artifacts('results/study8-fit', geom, responses_cond, keys,
                            geom['test_feature_names'], geom['test_trait'], extra_cols=extra)
-    run_study8_ablations(responses_cond, groups_df)
-
-
-def run_study8_ablations(responses_cond, groups_df):
-    """Literal-listener lesion: specifics carry zero evidence (generic-only sets).
-    Structure-matched (comparable log Z) + merged (shared-field) variants."""
-    print("  --- study 8 ablations ---")
-    rdir = 'results/study8-ablations'
-    os.makedirs(rdir, exist_ok=True)
-    inf.UB_B[3], inf.PUB_B[3] = np.log(1000.0), np.log(300.0)
-    for merge, fname in [(False, 'posterior-literal-matched.npz'),
-                         (True,  'posterior-literal.npz')]:
-        def fit_lit(merge=merge):
-            geom_lit, resp_lit, _ = s68.literal_study8(responses_cond, groups_df, merge=merge)
-            return inf.run_vbmc(geom_lit, resp_lit, max_evals=MAX_EVALS)
-        load_or_fit(os.path.join(rdir, fname), fit_lit)
+    run_ablations('results/study8-ablations', _load_study8_geom_resp)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +252,136 @@ def run_study9_percond():
         print(f"  --- condition {c} ---")
         load_or_fit(
             os.path.join(rdir, f'posterior-{c}.npz'),
-            lambda c=c: inf.run_vbmc(geom, {c: responses_cond[c]}, max_evals=MAX_EVALS))
+            lambda c=c: inf.run_vbmc(geom, {c: responses_cond[c]}, max_evals=MAX_EVALS, seed=SEED))
+
+
+# ---------------------------------------------------------------------------
+# per-feature ZOIB linking (linking.py): full + null fits, own results dirs
+# ---------------------------------------------------------------------------
+# Same pipeline as fit_full_and_artifacts, but with link='zoib' and RAW ratings
+# (no half-bin nudge). Writes ONLY to results/<study>-fit-zoib/, so the original
+# free-shape fits in results/<study>-fit/ are never touched.
+def export_zoib_link(results_dir, geom, responses_raw, theta, test_feature_names, test_trait):
+    """Fit the ZOIB linking at the posterior-median theta; write
+    fitted-link-zoib.{npz,csv}. Returns (link_theta, cond_data)."""
+    import linking as lk
+    ls, mu0, sig, beta = theta
+    _, link_theta, cond_data = inf.total_log_lik_zoib(
+        geom, responses_raw, ls, mu0, sig, beta_speaker=beta, return_link=True)
+    p = lk.params_to_numpy(lk.unpack(jnp.asarray(link_theta)))
+    cols = ['m_kl', 'kappa_kl', 'a_kl', 'b_kl', 'pi0_kl', 'pi1_kl',
+            'm_nkl', 'kappa_nkl', 'a_nkl', 'b_nkl', 'pi0_nkl', 'pi1_nkl']
+    np.savez_compressed(os.path.join(results_dir, 'fitted-link-zoib.npz'),
+                        link_theta=link_theta, feature_names=np.array(test_feature_names),
+                        theta=np.array(theta), **{k: p[k] for k in cols})
+    pd.DataFrame({'feature': test_feature_names, 'trait': test_trait, **{k: p[k] for k in cols}}
+                 ).round(5).to_csv(os.path.join(results_dir, 'fitted-link-zoib.csv'), index=False)
+    print("  saved fitted-link-zoib.{npz,csv}")
+    return link_theta, cond_data
+
+
+def export_zoib_predictions(results_dir, geom, responses_raw, theta, link_theta, cond_data,
+                            test_feature_names, keys, extra_cols=None):
+    """predictions.csv for the ZOIB fit: ratings-free (pred_prior) and
+    ratings-conditioned (pred_posterior) mean ratings under the ZOIB mixture."""
+    import linking as lk
+    ls, mu0, sig, beta = theta
+    J = geom['J']
+    p = lk.unpack(jnp.asarray(link_theta))
+    pz1_prior = inf.prior_pz1_modes(geom, ls, mu0, sig, beta_speaker=beta)
+    rows, n_bad = [], 0
+    for k in keys:
+        _, y_hat, ok = inf.laplace_log_Z(cond_data[k], ls, mu0, sig, beta_speaker=beta)
+        n_bad += (not ok)
+        pz1_post = 1.0 / (1.0 + np.exp(-y_hat[:J]))
+        pred_prior = lk.expected_rating(p, pz1_prior[k])
+        pred_post = lk.expected_rating(p, pz1_post)
+        emp = np.array(responses_raw[k]).mean(0)
+        for j, f in enumerate(test_feature_names):
+            row = {'key': k, 'feature': f, 'empirical_mean': float(emp[j]),
+                   'pz1_prior': float(pz1_prior[k][j]), 'pz1_posterior': float(pz1_post[j]),
+                   'pred_prior': float(pred_prior[j]), 'pred_posterior': float(pred_post[j])}
+            if extra_cols and k in extra_cols:
+                row.update(extra_cols[k])
+            rows.append(row)
+    pd.DataFrame(rows).to_csv(os.path.join(results_dir, 'predictions.csv'), index=False)
+    msg = f"  saved predictions.csv ({len(rows)} rows"
+    if n_bad:
+        msg += f", {n_bad} groups' Laplace mode not cleanly converged"
+    print(msg + ")")
+
+
+def fit_zoib_and_artifacts(results_dir, geom, responses_raw, keys,
+                           test_feature_names, test_trait, extra_cols=None):
+    """ZOIB counterpart of fit_full_and_artifacts: full model (fitted ls) + the
+    distance-blind null (ls pinned), then linking + predictions at the full
+    model's posterior median. Cached like the rest (delete-to-refit)."""
+    os.makedirs(results_dir, exist_ok=True)
+    fit_f = load_or_fit(
+        os.path.join(results_dir, 'posterior.npz'),
+        lambda: inf.run_vbmc(geom, responses_raw, link='zoib', max_evals=MAX_EVALS, seed=SEED))
+    load_or_fit(
+        os.path.join(results_dir, 'posterior-null.npz'),
+        lambda: inf.run_vbmc(geom, responses_raw, link='zoib', ls_fixed=inf.LS_FLAT,
+                             max_evals=MAX_EVALS, seed=SEED))
+    theta = _median_theta(fit_f)
+    print(f"  posterior median: ls={theta[0]:.3f} mu_0={theta[1]:+.3f} "
+          f"sigma={theta[2]:.3f} beta={theta[3]:.3f}")
+    link_theta, cond_data = export_zoib_link(results_dir, geom, responses_raw, theta,
+                                             test_feature_names, test_trait)
+    export_zoib_predictions(results_dir, geom, responses_raw, theta, link_theta, cond_data,
+                            test_feature_names, keys, extra_cols)
+
+
+def run_study9_zoib():
+    print("\n===== STUDY 9 (prereg, joint) -- per-feature ZOIB linking =====")
+    geom = inf.load_geometry()
+    responses_raw, _ = inf.load_responses('../../data/study9_prereg.csv', clip_interior=False)
+    fit_zoib_and_artifacts('results/study9-fit-zoib', geom, responses_raw, list(inf.CONDITIONS),
+                           geom['test_feature_names'], geom['test_trait'])
+
+
+def run_ablations_zoib(rdir, loader):
+    """ZOIB counterpart of run_ablations, for BOTH length-scale families (the full
+    fitted-ls / flat-ls models are posterior{,-null}.npz from fit_zoib_and_artifacts):
+      - litsem      : literal semantics, fitted ls (beta absent)
+      - litsem-null : literal semantics, ls pinned at LS_FLAT (beta absent)
+      - notransfer  : no utterances; ls is irrelevant (pinned), beta absent --
+                      the same model in both families.
+    loader() must return (geom, RAW responses_cond) freshly each call."""
+    print(f"  --- ZOIB ablations -> {rdir} ---")
+    os.makedirs(rdir, exist_ok=True)
+
+    def fit_litsem(ls_fixed):
+        g, r = loader()
+        g['speaker'] = 'literal'
+        fit = inf.run_vbmc(g, r, link='zoib', ls_fixed=ls_fixed, fit_beta=False,
+                           max_evals=MAX_EVALS, seed=SEED)
+        fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], np.nan)   # no beta in this model
+        return fit
+    load_or_fit(os.path.join(rdir, 'posterior-litsem.npz'), lambda: fit_litsem(None))
+    load_or_fit(os.path.join(rdir, 'posterior-litsem-null.npz'), lambda: fit_litsem(inf.LS_FLAT))
+
+    def fit_notransfer():
+        g, r = loader()
+        for c in list(g['x_train_cond']):
+            g['x_train_cond'][c] = jnp.zeros((0, 2))
+            g['u_train_cond'][c] = jnp.zeros(0, dtype=jnp.int32)
+            g['train_names_cond'][c] = []
+        fit = inf.run_vbmc(g, r, link='zoib', ls_fixed=inf.LS_FLAT, fit_beta=False,
+                           max_evals=MAX_EVALS, seed=SEED)
+        fit['beta_samples'] = np.full(fit['ls_samples'].shape[0], np.nan)
+        return fit
+    load_or_fit(os.path.join(rdir, 'posterior-notransfer.npz'), fit_notransfer)
+
+
+def run_study6_zoib():
+    print("\n===== STUDY 6 (prereg) -- per-feature ZOIB linking =====")
+    geom, responses_raw = s68.load_study6_prereg(clip_interior=False)
+    fit_zoib_and_artifacts('results/study6-fit-zoib', geom, responses_raw, list(geom['x_train_cond']),
+                           geom['test_feature_names'], geom['test_trait'])
+    run_ablations_zoib('results/study6-ablations-zoib',
+                       lambda: s68.load_study6_prereg(clip_interior=False))
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +390,8 @@ STUDIES = {
     'study8':          run_study8,
     'study9':          run_study9,
     'study9-percond':  run_study9_percond,
+    'study9-zoib':     run_study9_zoib,
+    'study6-zoib':     run_study6_zoib,
 }
 
 if __name__ == '__main__':

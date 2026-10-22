@@ -1,0 +1,415 @@
+---
+title: Asymmetric Generalization 
+jupyter: python3
+format: typst
+author: Mark Ho
+date: today
+execute:
+  echo: false
+---
+
+
+# Generative model
+
+The overall generative model can be thought of as a latent function `$phi.alt$`{=typst} that maps from the embedding space `$cal(X) = bb(R)^n$`{=typst} to a potential `$bb(R)$`{=typst}. 
+In the simplest case, a learner observes `$(x, y)$`{=typst} and needs to generalize to a new point `$x'$`{=typst}.
+This is a posterior predictive:
+```{=typst}
+$ P(phi.alt(x') | phi.alt(x) = y) = integral_Phi P(phi.alt(x') | phi.alt) P(phi.alt | phi.alt(x) = y) dif phi.alt $
+```
+where we have a posterior over the function:
+```{=typst}
+$ P(phi.alt | phi.alt(x) = y) prop P(phi.alt(x) = y | phi.alt) P(phi.alt) $
+```
+
+with prior $P(phi.alt)$`{=typst} over functions.
+
+# GP formulation
+
+In Gaussian Process (GP) terms, we can think of `$phi.alt$`{=typst} as a function sampled from a GP with mean function `$m(x)$`{=typst} and kernel `$k(x, x')$`{=typst}.
+
+```{=typst}
+$ phi.alt tilde cal(G P)(m, k) $
+```
+
+The standard RBF kernel with amplitude `$sigma$`{=typst} and lengthscale `$l$`{=typst} is:
+
+```{=typst}
+$ k_(sigma, l)(x, x') = sigma^2 exp(-(x - x')^2 / (2 l^2)) $
+```
+
+From this perspective, $P(\phi)$ is a prior distribution parameterized by $m$, $\sigma$, and $l$, which we as the scientists need to infer but are fixed for the learner. 
+@fig-model depicts this as a graphical model. 
+
+::: {#fig-model}
+
+```{=typst}
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
+#diagram(
+  node-stroke: 0.6pt,
+  node-shape: circle,
+  spacing: (1.8cm, 0.45cm),
+  // Hyperparameters, fixed for the learner
+  node((0, -1), [], radius: 2pt, fill: black, name: <m>),
+  node((0.5, -1), [], radius: 2pt, fill: black, name: <sigma>),
+  node((1, -1), [], radius: 2pt, fill: black, name: <l>),
+  node((0, -1.3), $m$, stroke: none),
+  node((0.5, -1.3), $sigma$, stroke: none),
+  node((1, -1.3), $l$, stroke: none),
+  node((1.75, -1.1), text(size: 8pt)[prior parameters], stroke: none),
+  // The learner's model
+  node((0.5, 0), $phi.alt$, radius: 12pt, name: <phi>),
+  node((0, 1), $y$, radius: 12pt, fill: luma(220), name: <y>),
+  node((1, 1), $y'$, radius: 12pt, name: <yp>),
+  node((0, 2), $x$, radius: 12pt, fill: luma(220), name: <x>),
+  node((1, 2), $x'$, radius: 12pt, fill: luma(220), name: <xp>),
+  node(enclose: (<phi>, <y>, <yp>, <x>, <xp>), shape: rect, stroke: (dash: "dashed", thickness: 0.6pt), inset: 7pt, corner-radius: 4pt),
+  node((1.75, 1), text(size: 8pt)[learner's inference problem], stroke: none),
+  edge(<m>, <phi>, "-|>"),
+  edge(<sigma>, <phi>, "-|>"),
+  edge(<l>, <phi>, "-|>"),
+  edge(<phi>, <y>, "-|>"),
+  edge(<phi>, <yp>, "-|>"),
+  edge(<x>, <y>, "-|>"),
+  edge(<xp>, <yp>, "-|>"),
+)
+```
+
+The learner's inference problem. Shaded nodes are observed. Dots are prior parameters, fixed for the learner and inferred by the scientist.
+
+:::
+
+## Symmetric Generalization
+
+Under the standard RBF, generalization is always symmetric, meaning the effect of observing $(x, y)$ on a prediction at $x'$ is the same as the effect of observing $(x', y)$ on a prediction at $x$. 
+Formally, given `$x, x' in cal(X)$`{=typst} and `$y in bb(R)$`{=typst} generalization is symmetric (assuming a constant mean function):
+
+```{=typst}
+$ P(phi.alt(x) | phi.alt(x')=y) = P(phi.alt(x') | phi.alt(x) = y) $
+```
+
+This is because the covariance matrix induced by the standard RBF is symmetric (as it must be) and its diagonal is constant. For example, take the unit RBF `$k = k_(1, 1)$`{=typst}, with `$x = -1$`{=typst}, `$x' = 1$`{=typst}, and `$y = 1$`{=typst}. The covariance matrix is:
+
+```{=typst}
+$ K = mat(k(-1, -1), k(-1, 1); k(1, -1), k(1, 1)) approx mat(1, 0.135; 0.135, 1) $
+```
+
+With zero mean, the two conditional distributions have the same mean and variance:
+
+```{=typst}
+$ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.135, 0.982) $
+$ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.135, 0.982) $
+```
+
+## Asymmetric Generalization with Non-stationary Amplitude
+
+If the covariance matrix can have non-constant diagonal elements, then generalization can be asymmetric.
+For example, scale the unit RBF `$k$`{=typst} by an amplitude `$sigma(x)$`{=typst} that differs between the two points, `$sigma(-1) = 1.414$`{=typst} and `$sigma(1) = 0.707$`{=typst}. The covariance matrix is then:
+
+```{=typst}
+$ K = mat(sigma(-1)^2 k(-1, -1), sigma(-1) sigma(1) k(-1, 1); sigma(1) sigma(-1) k(1, -1), sigma(1)^2 k(1, 1)) approx mat(2, 0.135; 0.135, 0.5) $
+```
+
+With the same `$x = -1$`{=typst}, `$x' = 1$`{=typst}, `$y = 1$`{=typst}, and zero mean, the two conditional distributions differ:
+
+```{=typst}
+$ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.068, 0.491) $
+$ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.270, 1.964) $
+```
+
+The correlation between the two points is the same as before, 0.135. But observing at `$x' = 1$`{=typst}, where the prior variance is smaller, moves the prediction at `$x = -1$`{=typst} four times as much as the reverse.
+
+Therefore, we can define an RBF kernel with a non-stationary amplitude to achieve asymmetric generalization. The amplitude becomes a real-valued function of the input, `$sigma: cal(X) -> bb(R)$`{=typst}:
+
+```{=typst}
+$ k_(sigma(dot), l)(x, x') = (sigma(x) sigma(x') + epsilon^2) exp(-(x - x')^2 / (2 l^2)) $
+```
+
+where `$epsilon >= 0$`{=typst} is a small constant. With `$epsilon = 0$`{=typst} the kernel scales the RBF by `$sigma(x) sigma(x')$`{=typst}, and the covariance matrix in the example above is the one induced by `$k_(sigma(dot), 1)$`{=typst}. With `$epsilon > 0$`{=typst} the prior variance never reaches zero, even where the amplitude does.
+
+### Essentialness
+
+Amplitude roughly corresponds to the intrinsic variability of a point. 
+Where the amplitude is large in magnitude (high variance), a given observed value is unremarkable and generalizes less. 
+Where it is small (low variance), the same value is a large departure from the prior and generalizes more.
+We can then define a measure of "essentialness" as the inverse of the magnitude of the amplitude:
+```{=typst}
+$ e(x) = 1 / sqrt(sigma(x)^2 + epsilon^2) $
+```
+where `$epsilon$`{=typst} is a small constant that ensures essentialness is bounded.
+
+### Single observation example
+
+To illustrate, we use the kernel `$k_(sigma(dot), 1)$`{=typst} with `$epsilon = 0.1$`{=typst} and zero prior mean. We hold the amplitude at `$x = -1$`{=typst} at 1 and compare three values of the amplitude at `$x' = 1$`{=typst}: 0.25, 1, and 4. These give an essentialness at `$x' = 1$`{=typst} of about 3.7, 1, and 0.25. In between, the amplitude varies smoothly. With `$sigma(1) = 1$`{=typst} the amplitude is constant, so the kernel is a standard RBF.
+
+::: {.callout-note title="How the amplitude function is chosen"}
+The amplitude is a smooth real-valued curve through `$sigma(-1) = 1$`{=typst} and the chosen `$sigma(1)$`{=typst}. It is computed as the posterior mean of a GP with prior mean 1 and the unit RBF kernel. In data analysis `$sigma$`{=typst} is latent and has to be inferred. Here we fix it by hand.
+:::
+
+```{python}
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+
+def rbf(x, x_):
+    return jnp.exp(-(x - x_)**2 / (2 * 1.0**2))
+
+def gp(x, y, test, mean, kernel):
+    # Compute the covariance matrix
+    K = kernel(x[:, None], x[None, :])
+    K_s = kernel(x[:, None], test[None, :])
+    K_ss = kernel(test[:, None], test[None, :])
+
+    # Compute the mean and covariance of the predictive distribution
+    K_inv = jnp.linalg.inv(K + 1e-6 * jnp.eye(len(x)))
+    mu_s = mean + K_s.T @ K_inv @ (y - mean)
+    cov_s = K_ss - K_s.T @ K_inv @ K_s
+
+    return mu_s, cov_s
+
+def plot_gp(ax, mu, x, y, test, label, color='r', ls='-'):
+    # Plot the mean prediction
+    ax.plot(test, mu, color=color, ls=ls, lw=2, label=label)
+    # Plot the training data
+    ax.scatter(x, y, color=color, zorder=3)
+    ax.set_xlabel('Input')
+    ax.set_ylabel('Output')
+
+```
+
+```{python}
+xs = jnp.linspace(-1.5, 1.5, 150)
+eps = 0.1
+
+def norm(v):
+    return jnp.sqrt(v**2 + eps**2)
+
+amp_x = jnp.array([-1, 1])
+sigma_1s = [0.25, 1.0, 4.0]
+amp_ys = {
+    rf'$\sigma(1) = {sigma_1:g}$, $e(1) = {float(1 / norm(sigma_1)):.2g}$': jnp.array([1, sigma_1])
+    for sigma_1 in sigma_1s
+}
+
+def make_amplitude_rbf(amp_x, amp_y):
+    def amp(x):
+        amp_mu, _ = gp(amp_x, amp_y, x.ravel(), mean=1, kernel=rbf)
+        return amp_mu.reshape(x.shape)
+
+    def amplitude_rbf(x1, x2):
+        return (amp(x1) * amp(x2) + eps**2) * rbf(x1, x2)
+
+    return amplitude_rbf
+
+# Each condition is (observed input, input to generalize to)
+obs_y = jnp.array([1])
+obs_xs = {
+    'Obs at x = -1': (jnp.array([-1]), jnp.array([1])),
+    "Obs at x' = 1": (jnp.array([1]), jnp.array([-1])),
+}
+```
+
+@fig-asymmetry has one column per amplitude function. The top row shows the amplitude function, in red. The middle row shows the essentialness, in purple. The bottom row shows the posterior mean of `$phi.alt$`{=typst}, in blue, for two separate observations: `$y = 1$`{=typst} at `$x = -1$`{=typst}, or `$y = 1$`{=typst} at `$x' = 1$`{=typst}. Each curve passes through its observation (filled circle), and the open circle marks its prediction at the other point.
+
+```{python}
+#| label: fig-asymmetry
+#| fig-cap: 'Amplitude functions (top), essentialness functions (middle), and posterior means of $\phi$ (bottom) for three values of $\sigma(1)$. Filled circles mark observations and open circles mark predictions at the other point.'
+amp_color = 'tab:red'
+ess_color = 'tab:purple'
+len_color = 'tab:green'
+phi_color = 'tab:blue'
+
+def annotate(ax, text, xy, offset, **kwargs):
+    ax.annotate(text, xy=xy, xytext=offset, textcoords='offset points', **kwargs)
+
+def plot_two_point_example(conditions, top_labels, top_colors):
+    # conditions maps a name to (values on xs of each upper-row function, kernel)
+    n_rows = len(top_labels) + 1
+    fig, axes = plt.subplots(n_rows, len(conditions), figsize=(4.5 * len(conditions), 3.3 * n_rows), sharex=True, sharey='row')
+    for (*ax_tops, ax_phi), (name, (top_values, kernel)) in zip(axes.T, conditions.items()):
+        for ax_top, top_label, top_color, values in zip(ax_tops, top_labels, top_colors, top_values):
+            ax_top.plot(xs, values, color=top_color, lw=2)
+            ax_top.set_ylabel(top_label)
+            ax_top.set_title(f'{top_label} function')
+        ax_tops[0].set_title(f'{name}\n{top_labels[0]} function')
+
+        # Posterior means, with observations and predictions labeled
+        ax_phi.axhline(0, color='k', ls='--', lw=1)
+        annotate(ax_phi, 'prior mean', (0, 0), (0, 4), ha='center')
+        for label, (obs_x, pred_x) in obs_xs.items():
+            side = float(jnp.sign(pred_x[0]))
+            obs_mu, _ = gp(obs_x, obs_y, xs, mean=0, kernel=kernel)
+            pred_mu, _ = gp(obs_x, obs_y, pred_x, mean=0, kernel=kernel)
+            plot_gp(ax_phi, obs_mu, obs_x, obs_y, xs, label=None, color=phi_color)
+            ax_phi.scatter(pred_x, pred_mu, facecolors='white', edgecolors=phi_color, linewidths=2, s=50, zorder=3)
+            annotate(ax_phi, 'observed', (float(obs_x[0]), float(obs_y[0])), (0, 8), ha='center')
+            annotate(ax_phi, f'predicted\n{float(pred_mu[0]):.2f}', (float(pred_x[0]), float(pred_mu[0])), (side * 4, 6),
+                     ha='left' if side > 0 else 'right', va='bottom')
+        ax_phi.set_xlim(-2.1, 2.1)
+        ax_phi.set_ylim(-0.08, 1.45)
+        ax_phi.set_ylabel(r'Posterior mean of $\phi$')
+        ax_phi.set_title('Coherence function')
+
+    for ax in axes.flat:
+        ax.label_outer()
+    return axes
+
+conditions = {}
+for name, amp_y in amp_ys.items():
+    amp_mu, _ = gp(amp_x, amp_y, xs, mean=1, kernel=rbf)
+    conditions[name] = ([amp_mu, 1 / norm(amp_mu)], make_amplitude_rbf(amp_x, amp_y))
+axes = plot_two_point_example(conditions, ['Amplitude', 'Essentialness'], [amp_color, ess_color])
+for ax_amp in axes[0]:
+    ax_amp.axhline(0, color='k', ls='--', lw=1)
+axes[1, 0].set_ylim(0, 4.5)
+axes[2, 0].set_ylim(-0.08, 1.8)
+plt.show()
+```
+
+With constant amplitude, `$sigma(1) = 1$`{=typst}, both predictions are 0.14. With `$sigma(1) = 0.25$`{=typst}, the point `$x' = 1$`{=typst} is about 3.7 times as essential as `$x = -1$`{=typst}. Observing at `$x' = 1$`{=typst} predicts 0.49 at `$x = -1$`{=typst}, while observing at `$x = -1$`{=typst} predicts only 0.03 at `$x' = 1$`{=typst}. With `$sigma(1) = 4$`{=typst} the pattern reverses, with predictions of 0.54 and 0.03.
+
+### Multiple observation example
+
+@fig-complex shows an example of multiple observations under different amplitude and essentialness functions.
+
+```{python}
+#| label: fig-complex
+#| fig-cap: 'Amplitude functions (top), essentialness functions (middle), and posterior means of $\phi$ (bottom) when a cluster of three observations has high, constant, or low essentialness. Filled circles mark the observations and open circles mark predictions further away.'
+complex_xs = jnp.linspace(-4, 4, 400)
+complex_amp_x = jnp.array([-0.5, 0, 0.5])
+complex_amp_ys = {
+    'high essentialness': jnp.full(3, 0.25),
+    'constant': jnp.full(3, 1.0),
+    'low essentialness': jnp.full(3, 4.0),
+}
+
+# Each condition is (observed inputs, observed values, inputs to generalize to)
+complex_obs = {
+    'Cluster': (jnp.array([-0.5, 0, 0.5]), jnp.array([1.0, 1.0, 1.0]), jnp.array([-3, -2, 2, 3])),
+}
+
+def plot_set_example(test, conditions, obs_sets, top_labels, top_colors):
+    # conditions maps a name to (values on test of each upper-row function, kernel)
+    n_rows = len(top_labels) + 1
+    fig, axes = plt.subplots(n_rows, len(conditions), figsize=(6 * len(conditions), 3.6 * n_rows), sharex=True, sharey='row')
+    for (*ax_tops, ax_phi), (name, (top_values, kernel)) in zip(axes.T, conditions.items()):
+        for ax_top, top_label, top_color, values in zip(ax_tops, top_labels, top_colors, top_values):
+            ax_top.plot(test, values, color=top_color, lw=2)
+            ax_top.set_ylabel(top_label)
+            ax_top.set_title(f'{top_label} function')
+        ax_tops[0].set_title(f'{top_labels[0]} function: {name}')
+
+        # Posterior means, with observations and predictions
+        ax_phi.axhline(0, color='k', ls='--', lw=1)
+        annotate(ax_phi, 'prior mean', (0, 0), (0, -4), ha='center', va='top')
+        for label, (obs_x, obs_val, pred_x) in obs_sets.items():
+            obs_mu, _ = gp(obs_x, obs_val, test, mean=0, kernel=kernel)
+            pred_mu, _ = gp(obs_x, obs_val, pred_x, mean=0, kernel=kernel)
+            plot_gp(ax_phi, obs_mu, obs_x, obs_val, test, label=None, color=phi_color)
+            ax_phi.scatter(pred_x, pred_mu, facecolors='white', edgecolors=phi_color, linewidths=2, s=50, zorder=3)
+            for x_, mu_ in zip(pred_x, pred_mu):
+                annotate(ax_phi, f'{float(mu_):.2f}', (float(x_), float(mu_)), (0, 8), ha='center', fontsize=9)
+        ax_phi.set_ylim(-0.15, 1.65)
+        ax_phi.set_ylabel(r'Posterior mean of $\phi$')
+        ax_phi.set_title('Coherence function')
+
+    for ax in axes.flat:
+        ax.label_outer()
+    return axes
+
+conditions = {}
+for name, amp_y in complex_amp_ys.items():
+    amp_mu, _ = gp(complex_amp_x, amp_y, complex_xs, mean=1, kernel=rbf)
+    conditions[name] = ([amp_mu, 1 / norm(amp_mu)], make_amplitude_rbf(complex_amp_x, amp_y))
+axes = plot_set_example(complex_xs, conditions, complex_obs, ['Amplitude', 'Essentialness'], [amp_color, ess_color])
+plt.show()
+```
+
+## Asymmetric Generalization with Non-stationary Lengthscale
+
+Another way to make the RBF kernel non-stationary is to let the lengthscale depend on the input, `$l: cal(X) -> bb(R)_(> 0)$`{=typst}. This is the Gibbs kernel:
+
+```{=typst}
+$ k_(sigma, l(dot))(x, x') = sigma^2 sqrt((2 l(x) l(x')) / (l(x)^2 + l(x')^2)) exp(-(x - x')^2 / (l(x)^2 + l(x')^2)) $
+```
+
+When `$l(x) = c$`{=typst} is constant, this is the standard RBF `$k_(sigma, c)$`{=typst}.
+
+### Single observation example
+
+Unlike a non-stationary amplitude, a non-stationary lengthscale does not make generalization between two points asymmetric. The diagonal of the covariance matrix stays constant, since `$k_(sigma, l(dot))(x, x) = sigma^2$`{=typst} for every `$x$`{=typst}. For example, take `$sigma = 1$`{=typst}, `$l(-1) = 1$`{=typst}, and `$l(1) = 0.25$`{=typst}. With `$x = -1$`{=typst}, `$x' = 1$`{=typst}, and `$y = 1$`{=typst}, the covariance matrix is:
+
+```{=typst}
+$ K approx mat(1, 0.016; 0.016, 1) $
+```
+
+and the two conditional distributions have the same mean and variance:
+
+```{=typst}
+$ phi.alt(1) | phi.alt(-1) = 1 tilde cal(N)(0.016, 1.000) $
+$ phi.alt(-1) | phi.alt(1) = 1 tilde cal(N)(0.016, 1.000) $
+```
+
+@fig-gibbs repeats the single observation example with the lengthscale in place of the amplitude. We hold the lengthscale at `$x = -1$`{=typst} at 1 and compare three values of the lengthscale at `$x' = 1$`{=typst}: 0.25, 1, and 4. The log lengthscale is a smooth curve through these two values, computed as the posterior mean of a GP with the unit RBF kernel.
+
+```{python}
+#| label: fig-gibbs
+#| fig-cap: 'Lengthscale functions (top) and posterior means of $\phi$ (bottom) for three values of $l(1)$. Filled circles mark observations and open circles mark predictions at the other point.'
+def make_gibbs_rbf(loglen_x, loglen_y):
+    def lengthscale(x):
+        loglen_mu, _ = gp(loglen_x, loglen_y, x.ravel(), mean=0, kernel=rbf)
+        return jnp.exp(loglen_mu).reshape(x.shape)
+
+    def gibbs_rbf(x1, x2):
+        l1, l2 = lengthscale(x1), lengthscale(x2)
+        return jnp.sqrt(2 * l1 * l2 / (l1**2 + l2**2)) * jnp.exp(-(x1 - x2)**2 / (l1**2 + l2**2))
+
+    return gibbs_rbf
+
+loglen_x = jnp.array([-1, 1])
+l_1s = [0.25, 1.0, 4.0]
+loglen_ys = {rf'$l(1) = {l_1:g}$': jnp.array([0, jnp.log(l_1)]) for l_1 in l_1s}
+
+conditions = {}
+for name, loglen_y in loglen_ys.items():
+    loglen_mu, _ = gp(loglen_x, loglen_y, xs, mean=0, kernel=rbf)
+    conditions[name] = ([jnp.exp(loglen_mu)], make_gibbs_rbf(loglen_x, loglen_y))
+axes = plot_two_point_example(conditions, ['Lengthscale'], [len_color])
+plt.show()
+```
+
+The lengthscale changes how strongly an observation generalizes. The prediction at the other point is 0.02 with `$l(1) = 0.25$`{=typst}, 0.14 with `$l(1) = 1$`{=typst}, and 0.54 with `$l(1) = 4$`{=typst}. But in every column the two predictions are equal, even though the two posterior means are no longer mirror images. A non-stationary lengthscale changes the strength of generalization between two points equally in both directions. Asymmetry between two points requires a non-constant diagonal, which the amplitude provides.
+
+### Multiple observation example
+
+The symmetry above is between two single points. With several observations per side, a non-stationary lengthscale can make generalization asymmetric, by a different route than the amplitude.
+
+@fig-gibbs-sets shows how this happens. We observe `$y = 1$`{=typst} at both points on one side and predict the two points on the other side. With constant lengthscale the two posterior means are mirror images, and each set predicts 0.46 at the nearer point of the other set. With varying lengthscale, the observations on the left predict 0.74 at `$x = 0.5$`{=typst}, while the observations on the right predict only 0.40 at `$x = -0.5$`{=typst}.
+
+```{python}
+#| label: fig-gibbs-sets
+#| fig-cap: 'Lengthscale functions (top) and posterior means of $\phi$ (bottom) for a constant and a varying lengthscale. Each curve is conditioned on two observations (filled circles). Open circles mark its predictions at the inputs of the other pair.'
+sets_xs = jnp.linspace(-2.5, 2.5, 300)
+sets_loglen_x = jnp.array([-1.5, -0.5, 0.5, 1.5])
+sets_loglen_ys = {
+    'constant': jnp.zeros(4),
+    'varying': jnp.log(jnp.array([0.4, 0.4, 2.5, 2.5])),
+}
+
+# Each condition is (observed inputs, observed values, inputs to generalize to)
+sets_obs = {
+    'Obs on the left': (jnp.array([-1.5, -0.5]), jnp.array([1.0, 1.0]), jnp.array([0.5, 1.5])),
+    'Obs on the right': (jnp.array([1.5, 0.5]), jnp.array([1.0, 1.0]), jnp.array([-0.5, -1.5])),
+}
+
+conditions = {}
+for name, loglen_y in sets_loglen_ys.items():
+    loglen_mu, _ = gp(sets_loglen_x, loglen_y, sets_xs, mean=0, kernel=rbf)
+    conditions[name] = ([jnp.exp(loglen_mu)], make_gibbs_rbf(sets_loglen_x, loglen_y))
+axes = plot_set_example(sets_xs, conditions, sets_obs, ['Lengthscale'], [len_color])
+plt.show()
+```
+
+The reason is redundancy. Where the lengthscale is short, the two observations are nearly independent, so they count as two pieces of evidence and their effects add. Where the lengthscale is long, the second observation mostly repeats the first, so together they count as little more than one.
+
+This differs from the amplitude asymmetry in what it needs. A non-stationary amplitude makes generalization asymmetric even with one observation per side. A non-stationary lengthscale does so only with several observations per side.

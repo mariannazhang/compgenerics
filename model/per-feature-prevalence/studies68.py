@@ -118,8 +118,12 @@ def _base_geom(df, coords):
             'test_trait': test_trait, 'J': int(x_test.shape[0]), 'embed': '2d'}
 
 
-def _clip_ratings(R):
-    return np.clip(np.asarray(R, dtype=float) / 100.0, H, 1.0 - H)
+def _clip_ratings(R, clip_interior=True):
+    """0-100 ratings -> [0, 1]; with clip_interior, exact 0/1 are nudged half a slider
+    bin inward (for the Beta-density linking). clip_interior=False keeps them RAW,
+    as the ZOIB linking (linking.py) requires."""
+    R = np.asarray(R, dtype=float) / 100.0
+    return np.clip(R, H, 1.0 - H) if clip_interior else R
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +155,8 @@ def _study6_geom(features_pkl_path):
     return geom
 
 
-def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_path=SET1_PKL):
+def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_path=SET1_PKL,
+                       clip_interior=True):
     """(geom, responses_cond) for the PREREGISTERED study 6 replication.
 
     Design/geometry: 3 groups (generic/specific/baseline) over the set1 train/test
@@ -178,7 +183,7 @@ def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_pat
         print(f"load_study6_prereg: dropped {(~ok).sum()} further rows (unparseable ratings)")
     data, R = data[ok], R[ok]
 
-    responses_cond = {c: jnp.array(_clip_ratings(R[data['condition'] == c].values))
+    responses_cond = {c: jnp.array(_clip_ratings(R[data['condition'] == c].values, clip_interior))
                       for c in STUDY6_U_OF_COND}
     return geom, responses_cond
 
@@ -186,7 +191,7 @@ def load_study6_prereg(csv_path='../../data/study6_prereg.csv', features_pkl_pat
 # ---------------------------------------------------------------------------
 # Study 8
 # ---------------------------------------------------------------------------
-def load_study8(csv_path='../../data/study8_prereg.csv', features_pkl_path=SET1_PKL):
+def load_study8(csv_path='../../data/study8_prereg.csv', features_pkl_path=SET1_PKL, clip_interior=True):
     """(geom, responses_cond, groups_df) for study 8 (preregistered data).
 
     One likelihood group per unique feature->utterance configuration (all
@@ -257,7 +262,7 @@ def load_study8(csv_path='../../data/study8_prereg.csv', features_pkl_path=SET1_
         geom['u_train_cond'][key] = jnp.array([u for _, u in cfg], dtype=jnp.int32)
         geom['train_names_cond'][key] = names
         mask = (configs == cfg).values
-        responses_cond[key] = jnp.array(_clip_ratings(R_all[mask].values))
+        responses_cond[key] = jnp.array(_clip_ratings(R_all[mask].values, clip_interior))
         meta.append({'group': key,
                      'condition': 'baseline' if len(cfg) == 0
                                   else f"{sum(1 for _, u in cfg if u == 0)}/{len(cfg)}",

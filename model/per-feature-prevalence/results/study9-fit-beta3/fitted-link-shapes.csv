@@ -1,0 +1,16 @@
+feature,trait,a_kl,b_kl,a_nkl,b_nkl,mean_kl,mean_nkl
+can eat spicy food,diet,0.8276,0.3543,4.1448,3.7073,0.7002,0.5279
+eat breakfast very late,diet,0.5680,0.3465,2.6615,5.5779,0.6211,0.3230
+eat five meals a day,diet,0.6183,0.3475,1.4959,2.2876,0.6402,0.3954
+like juice with pulp,diet,0.7408,0.3783,4.5888,4.4399,0.6620,0.5082
+put pepper on all their foods,diet,0.5155,0.3454,1.5733,2.2855,0.5988,0.4077
+cry easily,personality,0.6120,0.3914,2.5977,4.2873,0.6099,0.3773
+like to collect rocks,personality,0.6318,0.3218,1.4552,2.8689,0.6625,0.3365
+like to dance,personality,1.0280,0.2846,5.5933,3.1146,0.7832,0.6423
+like to give high-fives,personality,0.7853,0.2781,4.5926,2.2363,0.7385,0.6725
+like to read books,personality,0.7959,0.2209,4.2293,2.8784,0.7827,0.5950
+can roll their tongue,physical,0.7265,0.3461,1.7605,2.8813,0.6773,0.3793
+can snap with their toes,physical,0.4924,0.3006,0.8697,2.8060,0.6209,0.2366
+can wiggle their ears,physical,0.5576,0.2812,1.2809,2.4075,0.6648,0.3473
+have cold hands and feet,physical,0.5828,0.3645,2.4144,4.9139,0.6152,0.3295
+snore when they sleep,physical,0.8276,0.4474,5.5756,7.0800,0.6491,0.4406

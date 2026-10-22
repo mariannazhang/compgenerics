@@ -1,0 +1,377 @@
+% ======================================================================
+% DRAFT: Computational model section
+% Assumes the preamble macros from the modeling notes (\ys, \us, \den, \normal,
+% \argmax, bbm, tikz bayesnet). Experiment numbering assumed:
+%   Experiment 1 = study 6 (generic / specific / baseline)
+%   Experiment 2 = study 8 (graded mix of generics and specifics)
+%   Experiment 3 = study 9 (feature-localized generics)
+% Lines marked TODO need a fact or a citation filled in.
+% ======================================================================
+
+\section{Computational model}
+
+Our account has three ingredients, each corresponding to one of the open
+questions raised above. First, a learner represents a category not by a single
+inductive potential but by a \emph{coherence function} over the space of
+possible features, which says how likely each feature is to be kind-linked: true
+of the category as such rather than of particular members. Second, the learner
+updates this function by interpreting what a speaker said, reasoning about why
+the speaker chose a generic or a specific statement. Third, the coherence
+function is smooth over a representation of world knowledge about features, so
+that evidence about one feature spreads to similar features. Below we describe
+the generative model the learner is assumed to hold, how each ingredient is
+formalized, the qualitative predictions that follow, and how we fit the model to
+participants' judgments and test each ingredient by lesioning it.
+
+\subsection{Overview}
+
+Consider a learner who hears a set of utterances $\us = \{u_1, \ldots, u_n\}$
+about a novel category (e.g., Zarpies). Each utterance $u_i$ mentions a feature
+$f_i$ and is either generic (``Zarpies $f_i$'') or specific (``This Zarpie
+$f_i$''). The learner is then asked about a novel feature $f'$ that was never
+mentioned and judges its prevalence $p' \in [0, 1]$: what proportion of Zarpies
+have $f'$?
+
+We assume that the learner explains the utterances by appeal to a latent
+variable for each feature, $z_i \in \{0, 1\}$, indicating whether $f_i$ is
+kind-linked for this category. Kind-linked features are ones the category
+supports generalizing (if being absent-minded is kind-linked for professors,
+then a new professor is likely absent-minded); features that are not kind-linked
+are idiosyncratic to individuals. The probability that each feature is
+kind-linked is given by a coherence function $\phi$, which assigns every
+possible feature a real-valued coherence $\phi(f)$, with
+$P(z = 1 \mid \phi) = \sigma(\phi(f))$ and $\sigma(y) = 1/(1 + e^{-y})$. A
+category of high inductive potential is one whose coherence function is high
+across much of feature space; a minimal category is one whose coherence is low
+everywhere.
+
+The learner's inference then has two steps (Figure~\ref{fig:graphical-model}).
+Utterances provide evidence about which mentioned features are kind-linked, and
+so about the coherence function:
+\begin{equation}
+    P(\phi \mid \us) \propto P(\phi) \prod_{i=1}^{n} \sum_{z_i \in \{0,1\}}
+        P(u_i \mid z_i)\, P(z_i \mid \phi).
+    \label{eq:phi-posterior}
+\end{equation}
+The coherence function in turn predicts whether the novel feature is kind-linked
+and hence how prevalent it is:
+\begin{equation}
+    P(p' \mid \us) = \int P(\phi \mid \us) \sum_{z' \in \{0,1\}}
+        P(p' \mid z')\, P(z' \mid \phi)\, d\phi.
+    \label{eq:prevalence-predictive}
+\end{equation}
+Three terms in these equations carry the theory. The prior $P(\phi)$ encodes
+world knowledge about which features go together (Section~\ref{sec:feature-space}).
+The utterance likelihood $P(u_i \mid z_i)$ encodes how statements are
+interpreted, literally or pragmatically (Section~\ref{sec:utterances}). The
+prevalence likelihood $P(p' \mid z')$ links the abstract notion of
+kind-linkedness to the graded prevalence judgments people actually give
+(Section~\ref{sec:linking}).
+
+% (graphical model figure from the notes goes here: phi -> z_i -> u_i, phi -> z' -> p')
+
+This structure is hierarchical in the sense of \citet{kempetal2007learningoverhypotheses}:
+the coherence function is an overhypothesis that sits above individual features
+and is shared by all of them. That is what lets statements about mentioned
+features bear on unmentioned ones. It differs from earlier models of generic
+language \citep{tesslergoodman2019languagegeneralization} in its target. Those
+models explain how ``Zarpies eat flowers'' changes beliefs about the prevalence
+of eating flowers. Ours explains how it changes beliefs about the prevalence of
+every other feature.
+
+\subsection{Feature space and the coherence function}
+\label{sec:feature-space}
+
+\paragraph{Representing features.} To give the learner world knowledge about how
+features relate, we represent each feature by an embedding of its description
+from a sentence-embedding model trained on large text corpora
+(TODO: model name and citation; 384-dimensional), projected to two dimensions
+(TODO: projection method). Features with similar meanings (e.g., ``like to
+dance'' and ``like to give high-fives'') lie close together, and features from
+different domains (dietary preferences, personality, physical traits) occupy
+different regions. We write $\mathbf{x}_i \in \mathbb{R}^2$ for the embedding of
+feature $f_i$ and $\mathbf{x}'$ for that of the novel feature. This is a
+deliberately minimal stand-in for world knowledge. It captures topical
+similarity between features but not, for example, causal relations among them
+\citep{rehder2003causalmodel}. % TODO check key
+
+\paragraph{A Gaussian process prior over coherence.} We place a Gaussian process
+(GP) prior on the coherence function \citep{rasmussenwilliams2006gaussian}.
+% TODO add bib
+For any finite set of features, here the $n$ mentioned features and the novel
+feature, the vector of their coherences
+$\ys = (y', y_1, \ldots, y_n)$ with $y_i = \phi(f_i)$ is multivariate normal:
+\begin{equation}
+    \ys \sim \normal\big(\mu_0 \mathbf{1},\; \mathbf{K}_\theta\big), \qquad
+    [\mathbf{K}_\theta]_{ij} = s^2 \exp\!\left(-\frac{\lVert \mathbf{x}_i - \mathbf{x}_j \rVert^2}{2\ell^2}\right).
+    \label{eq:gp-prior}
+\end{equation}
+The prior mean $\mu_0$ sets how coherent the learner expects a new category to
+be before hearing anything; the output scale $s$ sets how far coherence can move
+from that default; and the length scale $\ell$ sets how far evidence about one
+feature spreads through feature space.
+
+The length scale is the central quantity for our purposes, because its two
+limits correspond to two different theories of inductive potential. As
+$\ell \to \infty$, all features are perfectly correlated: the coherence function
+collapses to a single number for the whole category, and evidence about any
+feature raises or lowers expectations about every other feature equally. This is
+the classic notion of inductive potential as a property of the category alone.
+For finite $\ell$, the coherence function varies over feature space: hearing that
+Zarpies have some personality trait raises the coherence of other personality
+traits more than that of physical traits. Estimating $\ell$ from people's
+judgments, and comparing the fitted model with one where $\ell$ is fixed to be
+much larger than the feature space (Section~\ref{sec:lesions}), therefore tests
+whether people's inferences about inductive potential are feature-specific.
+
+\subsection{Interpreting utterances}
+\label{sec:utterances}
+
+The utterance likelihood $P(u_i \mid y_i) = \sum_{z_i} P(u_i \mid z_i) P(z_i \mid y_i)$
+connects what was said to coherence. We consider a literal and a pragmatic
+version.
+
+\paragraph{Literal semantics.} Under a simple truth-conditional semantics, a
+generic statement ``Zarpies $f_i$'' is true only if $f_i$ is kind-linked, whereas
+a specific statement ``This Zarpie $f_i$'' is true either way, since any
+individual can have an idiosyncratic feature:
+\begin{equation}
+    \den{u_i}(z_i) = \begin{cases}
+        \mathbbm{1}[z_i = 1] & \text{if } u_i \text{ is generic,} \\
+        1 & \text{if } u_i \text{ is specific.}
+    \end{cases}
+\end{equation}
+A literal learner treats each statement as a noisy report of its truth,
+$P(u_i \mid z_i) = (1 - \delta)\den{u_i}(z_i) + \delta\,(1 - \den{u_i}(z_i))$,
+with a small error rate $\delta = 0.05$. A literal learner thus becomes more
+confident that a feature is kind-linked after a generic, but a specific
+statement is equally likely under both values of $z_i$ and so carries no
+information about coherence.
+
+\paragraph{Pragmatic interpretation.} A pragmatic learner instead asks why the
+speaker chose this utterance over its alternative, following the Rational Speech
+Act framework \citep{goodmanfrank2016pragmaticlanguage}. The learner models a
+speaker who knows whether $f_i$ is kind-linked and chooses between the generic
+and the specific to convey that to a literal listener $L_0$:
+\begin{align}
+    L_0(z_i \mid u_i) &\propto \den{u_i}(z_i)\, P(z_i \mid y_i), \\
+    S_1(u_i \mid z_i) &= (1 - \epsilon)\,
+        \frac{\exp\{\beta\, L_0(z_i \mid u_i)\}}{\sum_{u} \exp\{\beta\, L_0(z_i \mid u)\}}
+        + \frac{\epsilon}{2},
+    \label{eq:speaker}
+\end{align}
+where $\beta > 0$ is the speaker's rationality, $\epsilon = 0.05$ allows for
+occasional uninformative choices, and the literal listener's prior is the
+learner's current coherence for that feature.
+% NOTE: utility is L0 probability (as implemented), not log L0 as in standard RSA.
+The pragmatic learner then uses $P(u_i \mid z_i) = S_1(u_i \mid z_i)$.
+
+Because a speaker who knows a feature is kind-linked would usually have said the
+more informative generic, hearing a specific statement is now evidence that the
+feature is \emph{not} kind-linked. The strength of this inference grows with
+$\beta$. Pragmatic interpretation is therefore what allows specific statements
+to lower inferred coherence, rather than leaving it unchanged.
+
+\subsection{From coherence to prevalence judgments}
+\label{sec:linking}
+
+The final component, $P(p' \mid z')$, maps the abstract variable
+``kind-linked'' onto the 0--100 prevalence scale participants used. Two
+properties of these judgments shape it. First, features differ in how prevalent
+people expect them to be regardless of the category: ``like to dance'' receives
+higher ratings than ``can snap with their toes'' in every condition. Second,
+ratings pile up at the ends of the scale, with many responses of exactly 0 or
+100.
+
+We therefore give each test feature $j$ its own pair of response distributions,
+one for when it is kind-linked and one for when it is not, and model each as a
+zero-and-one-inflated Beta distribution \citep{ospinaferrari2010inflatedbeta}:
+% TODO add bib
+\begin{equation}
+    P(p' \mid z' = c) = \begin{cases}
+        \pi_{0,j}^{c} & p' = 0, \\
+        \pi_{1,j}^{c} & p' = 1, \\
+        (1 - \pi_{0,j}^{c} - \pi_{1,j}^{c})\,
+            \mathrm{Beta}(p' \mid m_j^{c} \kappa_j^{c},\, (1 - m_j^{c})\kappa_j^{c}) & 0 < p' < 1,
+    \end{cases}
+    \qquad c \in \{\text{KL}, \neg\text{KL}\}.
+\end{equation}
+Marginalizing over $z'$, the predicted rating distribution for feature $j$ is a
+mixture of these two distributions weighted by the feature's coherence:
+\begin{equation}
+    P(p'_j \mid y'_j) = \sigma(y'_j)\, P(p'_j \mid z' = \text{KL})
+        + \big(1 - \sigma(y'_j)\big)\, P(p'_j \mid z' = \neg\text{KL}).
+    \label{eq:linking}
+\end{equation}
+To keep the two components interpretable, we constrain the kind-linked
+component to sit above the other: its Beta mean is at least as high
+($m_j^{\text{KL}} \ge m_j^{\neg\text{KL}}$), it puts at least as much mass on
+100 and no more mass on 0. We also require each Beta part to be single-peaked so
+that pile-ups at the endpoints are captured by the point masses. (Details are in
+Appendix~\ref{app:linking}.)
+
+This division of labor matters for interpreting the model. The linking function
+fixes, for each feature, the range of ratings it can receive, which is the
+segment between the mean of the non-kind-linked component and the mean of the
+kind-linked one. Coherence determines where along that segment the feature falls
+in a given condition. All of the model's predictions about how language changes
+judgments, across conditions and across features within a condition, therefore
+come from the coherence function and not from the linking function.
+% NOTE: with 8 free params per feature the linking function alone fits each
+% feature's overall mean; the theory is tested by within-feature condition
+% differences and by the model comparisons below, not by overall r.
+
+\subsection{Model predictions}
+\label{sec:predictions}
+
+Together, these components produce four qualitative predictions, which
+Experiments 1--3 test.
+% TODO: simulation figure, e.g. a 1-D feature space with coherence fields after
+% generics / specifics / mixed input at small vs large ell, literal vs pragmatic.
+
+\begin{enumerate}
+    \item \textbf{Generic statements raise the prevalence of unmentioned
+    features.} Generics raise the coherence of the mentioned features. Because
+    the GP ties coherences together, this raises the coherence, and hence the
+    predicted prevalence, of the novel feature. This requires only literal
+    semantics plus the hierarchical structure.
+
+    \item \textbf{Specific statements lower the prevalence of unmentioned
+    features.} Under pragmatic interpretation, a specific statement is evidence
+    against kind-linkedness, so it pulls coherence below the prior. A literal
+    learner predicts no change relative to hearing nothing.
+
+    \item \textbf{Effects are graded with the mix of generic and specific
+    statements.} Each utterance contributes its own likelihood term
+    (Eq.~\ref{eq:phi-posterior}), so inferred coherence, and with it predicted
+    prevalence, rises with the proportion of generic statements.
+
+    \item \textbf{Effects spread to similar features.} With a finite length
+    scale, generics about features in one region of feature space raise the
+    coherence of nearby novel features more than distant ones. A
+    distance-blind learner ($\ell \to \infty$) predicts the same increase for
+    every novel feature.
+\end{enumerate}
+
+\subsection{Lesioned models}
+\label{sec:lesions}
+
+To test whether each component is needed, we compare the full model with
+lesioned versions that each remove one ingredient (Table~\ref{tab:lesions}).
+
+\begin{table}[ht]
+\centering
+\caption{The full model and lesioned alternatives.}
+\label{tab:lesions}
+\begin{tabular}{lll}
+\toprule
+Model & Change from full model & Tests \\
+\midrule
+Full & --- & --- \\
+Distance-blind & $\ell$ fixed at 10 ($\gg$ feature-space diameter $\approx 0.8$) & Prediction 4 \\
+Literal & Literal semantics, no speaker model (no $\beta$) & Prediction 2 \\
+No transfer & Utterances removed; coherence stays at the prior & Predictions 1--3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The distance-blind model keeps the full apparatus but makes coherence a single
+category-level quantity, which tests whether feature similarity matters beyond
+category-level inductive potential. The literal model tests whether pragmatic
+reasoning is needed; because Experiment 3 contained only generic statements, for
+which literal and pragmatic interpretation make similar predictions, we compare
+these two only in Experiments 1 and 2. The no-transfer model tests whether
+language affects judgments about unmentioned features at all.
+
+\subsection{Parameter estimation and model comparison}
+\label{sec:inference}
+
+\paragraph{Data model.} Participants in the same condition (or, in Experiment 2,
+participants who heard the same assignment of generic and specific statements to
+features) form a group $g$. We assume that all participants in a group share
+the coherence function implied by what they heard, and that each participant's
+rating of each test feature is an independent draw from
+Eq.~\ref{eq:linking}. So the coherence of a feature is the probability that a
+participant treats it as kind-linked. For each group, the latent coherences of
+the $J$ test features and the $n_g$ mentioned features, $\ys_g$, receive the GP
+prior in Eq.~\ref{eq:gp-prior}.
+
+\paragraph{Parameters.} The model has four free parameters shared across all
+groups in an experiment, $\theta = (\ell, \mu_0, s, \beta)$, plus the
+linking-function parameters for each test feature. We place weakly informative
+priors on $\theta$:
+$\log \ell \sim \normal(\log 0.5, 1.5^2)$,
+$\mu_0 \sim \normal(0, 1)$,
+$\log s \sim \normal(\log 1.5, 1)$, and
+$\log \beta \sim \normal(\log 3, 1)$.
+% TODO report bounds of the VBMC box if any posterior presses against them
+% (Exp 3 ZOIB fit: beta median 25.9, box edge 30).
+
+\paragraph{Marginal likelihood over coherence.} For a given $\theta$, the
+likelihood of a group's data requires integrating over the latent coherences:
+\begin{equation}
+    P(\mathbf{r}_g, \us_g \mid \theta) = \int
+        \prod_{k, j} P(r_{kj} \mid y'_j)\,
+        \prod_{i} P(u_i \mid y_i)\;
+        \normal(\ys_g \mid \mu_0\mathbf{1}, \mathbf{K}_\theta)\, d\ys_g,
+\end{equation}
+where $r_{kj}$ is participant $k$'s rating of test feature $j$. We approximate
+this integral with a Laplace approximation \citep{rasmussenwilliams2006gaussian}:
+we find the posterior mode $\hat{\ys}_g$ by Newton's method and approximate
+the posterior by a Gaussian with precision equal to the negative Hessian
+$\mathbf{H}_g$ of the log joint at the mode, giving
+\begin{equation}
+    \log P(\mathbf{r}_g, \us_g \mid \theta) \approx
+        \log \tilde{p}(\hat{\ys}_g) + \tfrac{D_g}{2}\log 2\pi
+        - \tfrac{1}{2}\log\lvert \mathbf{H}_g \rvert,
+\end{equation}
+where $\tilde{p}$ is the integrand above and $D_g = J + n_g$. Groups are
+conditionally independent given $\theta$, so the total log likelihood is the
+sum over groups.
+
+\paragraph{Linking parameters.} Rather than integrating over the 8 linking
+parameters of each test feature, we set them to their (lightly penalized)
+maximum-likelihood values at each $\theta$, given the coherences the model
+predicts from the utterances alone (a profile likelihood). Because the full
+model and every lesioned model profile the same linking function, this choice
+does not favor any of them.
+
+\paragraph{Posterior over parameters.} We infer the posterior over $\theta$
+with Variational Bayesian Monte Carlo \citep[VBMC;][]{acerbi2018vbmc},
+% TODO add bib
+which is designed for expensive likelihoods such as ours and also returns an
+estimate of the log model evidence $\log P(\text{data} \mid \text{model})$
+(the evidence lower bound). We compare models by the difference in log evidence
+(the log Bayes factor). Because the evidence integrates over $\theta$, a model
+with more free parameters, such as the full model relative to the
+distance-blind one, pays for its added flexibility automatically.
+% TODO: for lesions that change the utterance likelihood (literal, no transfer),
+% compare log P(ratings | utterances, model), not the joint evidence. See notes.
+
+\paragraph{Model predictions.} To evaluate how well the model predicts
+judgments, we compute its predictions from the utterances alone: for each group
+we find the coherence mode given only the GP prior and the utterances
+(no ratings), and report the expected rating under Eq.~\ref{eq:linking} at that
+coherence, evaluated at the posterior median of $\theta$. Ratings therefore
+inform the model only through the shared parameters $\theta$ and the linking
+function, never through the group-specific coherences being predicted.
+
+% ======================================================================
+\appendix
+\section{Model details}
+
+\subsection{Laplace approximation}
+% Newton with backtracking line search, initialized at mu_0; jitter 1e-6 on the
+% Hessian, 1e-4 on K. Predictive coherence at a new location given the
+% training-block mode (used for coherence-field figures):
+% E[y(x*)] = mu_0 + k_*^T K^{-1} (\hat y_train - mu_0 1).
+
+\subsection{Linking function}
+\label{app:linking}
+% Parameterization (m, kappa, pi0, pi1 per class), constraints
+% a,b > 1; kappa <= 100; m in [0.02, 0.98]; m_KL >= m_notKL;
+% pi1_KL >= pi1_notKL; pi0_KL <= pi0_notKL; Beta(1.5, 1.5) penalty on each pi.
+% Fit: damped Newton from multiple data-driven and random starts per feature.
+
+\subsection{VBMC settings}
+% budget 400 evaluations, fixed seed, convergence diagnostics per fit.
